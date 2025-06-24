@@ -1,0 +1,373 @@
+// The Dangler - dangler.js
+// Full version: HTTP status code, deduped resources, clear failure output
+
+const { chromium } = require('playwright');
+const dns = require('dns');
+const net = require('net');
+const fs = require('fs');
+
+const REMOTE_TIMEOUT_MS = 5000;
+
+// === CLI FLAG PARSER ===
+const args = process.argv.slice(2);
+const flags = {
+  url: '',
+  debug: false,
+  output: 'dangler_output',
+  maxPages: 50,
+  proxy: ''
+};
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--url' || arg === '-u') {
+    flags.url = args[i + 1];
+    i++;
+  } else if (arg === '--debug' || arg === '-d') {
+    flags.debug = true;
+  } else if (arg === '--output' || arg === '-o') {
+    flags.output = args[i + 1];
+    i++;
+  } else if (arg === '--max-pages' || arg === '-m') {
+    flags.maxPages = parseInt(args[i + 1], 10);
+    if (isNaN(flags.maxPages) || flags.maxPages < 1) {
+      console.error('--max-pages must be a positive integer.');
+      process.exit(1);
+    }
+    i++;
+  } else if (arg === '--proxy' || arg === '-p') {
+    flags.proxy = args[i + 1];
+    i++;
+  }
+}
+
+if (!flags.url) {
+  console.error('Usage: node dangler.js --url <target> [--debug] [--output <base>] [--max-pages <num>] [--proxy <url>]');
+  process.exit(1);
+}
+
+const outputBase = flags.output.replace(/\.(json|html)$/i, '');
+const outputJson = `${outputBase}.json`;
+const outputHtml = `${outputBase}.html`;
+
+const startUrl = flags.url;
+const startDomain = (new URL(startUrl)).hostname;
+const allowedDomains = [startDomain];
+const maxPages = flags.maxPages;
+
+const results = [];
+const hostCheckCache = new Map();
+const urlCheckCache = new Map();
+
+let totalRemoteResources = 0;
+let potentialTakeovers = 0;
+const allDiscoveredPages = new Set();
+
+// === HELPERS ===
+
+function stripQuery(url) {
+  try {
+    const u = new URL(url);
+    u.search = '';
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
+function getPath(url) {
+  try {
+    return new URL(url).pathname || '/';
+  } catch {
+    return '/';
+  }
+}
+
+async function withTimeout(promise, ms) {
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`Timeout after ${ms} ms`)), ms)
+  );
+  return Promise.race([promise, timeout]);
+}
+
+async function resolveHost(hostname) {
+  if (!hostname) return false;
+  return withTimeout(new Promise((resolve) => {
+    dns.lookup(hostname, (err) => {
+      resolve(!err);
+    });
+  }), REMOTE_TIMEOUT_MS).catch(() => false);
+}
+
+async function checkTCP(hostname) {
+  if (!hostname) return false;
+  return withTimeout(new Promise((resolve) => {
+    const socket = net.connect(80, hostname);
+    socket.on('connect', () => {
+      socket.end();
+      resolve(true);
+    });
+    socket.on('error', () => {
+      resolve(false);
+    });
+  }), REMOTE_TIMEOUT_MS).catch(() => false);
+}
+
+async function checkHTTP(url) {
+  if (!url.startsWith('http')) return { ok: false, status: 0 };
+  return withTimeout(fetch(url, { method: 'HEAD' })
+    .then(res => ({ ok: res.status < 400, status: res.status }))
+  , REMOTE_TIMEOUT_MS).catch(() => ({ ok: false, status: 0 }));
+}
+
+async function analyzeJS(url) {
+  if (!url.startsWith('http')) return false;
+  return withTimeout(
+    fetch(url)
+      .then(res => res.text())
+      .then(js =>
+        /createElement\s*\(\s*['"]script['"]\s*\)/i.test(js) ||
+        /\$\.getScript/i.test(js) ||
+        /import\s*\(/i.test(js)
+      ),
+    REMOTE_TIMEOUT_MS
+  ).catch(() => false);
+}
+
+async function getHostCheck(hostname) {
+  if (!hostname) return { resolves: false, tcpOk: false };
+  if (hostCheckCache.has(hostname)) {
+    if (flags.debug) console.log(`Host cache HIT: ${hostname}`);
+    return hostCheckCache.get(hostname);
+  }
+  if (flags.debug) console.log(`Host cache MISS: ${hostname} -> checking...`);
+  const resolves = await resolveHost(hostname);
+  const tcpOk = await checkTCP(hostname);
+
+  const result = { resolves, tcpOk };
+  hostCheckCache.set(hostname, result);
+  return result;
+}
+
+async function getUrlCheck(url) {
+  if (!url.startsWith('http')) return { httpOk: false, httpStatusCode: 0, loadsOtherJS: false };
+
+  const ext = url.split('?')[0].split('.').pop().toLowerCase();
+  const cacheKey = (ext === 'js' || ext === 'css') ? stripQuery(url) : url;
+
+  if (urlCheckCache.has(cacheKey)) {
+    if (flags.debug) console.log(`URL cache HIT: ${cacheKey}`);
+    return urlCheckCache.get(cacheKey);
+  }
+
+  if (flags.debug) console.log(`URL cache MISS: ${cacheKey} -> checking...`);
+  const httpRes = await checkHTTP(url);
+  let loadsOtherJS = false;
+  if (ext === 'js') {
+    loadsOtherJS = await analyzeJS(url);
+  }
+
+  const result = { httpOk: httpRes.ok, httpStatusCode: httpRes.status, loadsOtherJS };
+  urlCheckCache.set(cacheKey, result);
+  return result;
+}
+
+// === Spinner ===
+const spinnerChars = ['|', '/', '-', '\\'];
+let spinnerIndex = 0;
+let spinnerInterval;
+
+function startSpinner(message) {
+  process.stdout.write(message + '\n');
+  spinnerInterval = setInterval(() => {
+    process.stdout.write(`\r${spinnerChars[spinnerIndex++]} `);
+    spinnerIndex %= spinnerChars.length;
+  }, 100);
+}
+
+function stopSpinner() {
+  clearInterval(spinnerInterval);
+  process.stdout.write('\r ');
+  process.stdout.write('\r');
+}
+
+// === REPORT ===
+function writeReportsAndExit() {
+  stopSpinner();
+  fs.writeFileSync(outputJson, JSON.stringify(results, null, 2));
+  console.log(`\nJSON report saved to: ${outputJson}`);
+
+  const pagesCrawled = results.length;
+  const totalPagesFound = allDiscoveredPages.size;
+  const timestamp = new Date().toISOString();
+
+  // --- Failures to console ---
+  console.log(`\n❌ Failures:`);
+  results.forEach(page => {
+    page.resources.forEach(r => {
+      if (!r.resolves || !r.tcpOk || !r.httpOk) {
+        let reason = [];
+        if (!r.resolves) reason.push("DNS failure");
+        else if (!r.tcpOk) reason.push("TCP failure");
+        else if (!r.httpOk) reason.push(`HTTP ${r.httpStatusCode}`);
+        console.log(`   [!] ${r.url} (${reason.join(', ')}) on ${page.page}`);
+      }
+    });
+  });
+
+  // --- HTML ---
+  let html = `<html><head><title>The Dangler Report</title><style>
+    body { font-family: sans-serif; margin: 40px; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+    th, td { border: 1px solid #ddd; padding: 8px; }
+    th { background: #f0f0f0; }
+    a { color: #0645AD; }
+    small { color: #666; font-size: smaller; }
+  </style></head><body>
+  <h1>The Dangler</h1>
+  <hr>
+  <p><strong>Target:</strong> ${flags.url}<br>
+  <strong>Max Pages:</strong> ${flags.maxPages}<br>
+  <strong>Timestamp:</strong> ${timestamp}</p>`;
+
+  // --- Failures Table ---
+  html += `<h2>Failures: Could Not Resolve or Retrieve</h2><table><tr><th>Resource URL</th><th>Parent Page</th><th>Reason</th></tr>`;
+  results.forEach(page => {
+    page.resources.forEach(r => {
+      if (!r.resolves || !r.tcpOk || !r.httpOk) {
+        let reason = [];
+        if (!r.resolves) reason.push("DNS failure");
+        else if (!r.tcpOk) reason.push("TCP failure");
+        else if (!r.httpOk) reason.push(`HTTP ${r.httpStatusCode}`);
+        html += `<tr>
+          <td><a href="${r.url}" target="_blank">${r.url}</a></td>
+          <td><a href="${page.page}" target="_blank">${getPath(page.page)}</a></td>
+          <td>${reason.join(", ")}</td>
+        </tr>`;
+      }
+    });
+  });
+  html += `</table>`;
+
+  // --- Unique Offsite Resources ---
+  html += `<h2>Unique Offsite Resources<br><small style="font-size: smaller;">(cache busters dropped)</small></h2>
+  <table><tr><th>Resource URL</th><th>Count</th></tr>`;
+  const unique = {};
+  results.forEach(page => {
+    page.resources.forEach(r => {
+      const key = stripQuery(r.url);
+      unique[key] = (unique[key] || 0) + 1;
+    });
+  });
+  const sortedUnique = Object.entries(unique).sort((a, b) => b[1] - a[1]);
+  sortedUnique.forEach(([key, count]) => {
+    html += `<tr><td><a href="${key}" target="_blank">${key}</a></td><td>${count}</td></tr>`;
+  });
+  html += `</table>`;
+
+  // --- Summary Table ---
+  html += `<h2>Scan Summary</h2><table>
+  <tr><th>Metric</th><th>Value</th></tr>
+  <tr><td>Pages Crawled</td><td>${pagesCrawled} of ${totalPagesFound}</td></tr>
+  <tr><td>Remote Resources Checked</td><td>${totalRemoteResources}</td></tr>
+  <tr><td>Potential Takeovers</td><td>${potentialTakeovers}</td></tr>
+  </table></body></html>`;
+
+  fs.writeFileSync(outputHtml, html);
+  console.log(`HTML report saved to: ${outputHtml}`);
+
+  console.log(`\n=== Dangler Scan Summary ===`);
+  console.log(`Target Site: ${flags.url}`);
+  console.log(`Max Pages: ${flags.maxPages}`);
+  console.log(`Pages Crawled: ${pagesCrawled} of ${totalPagesFound}`);
+  console.log(`Remote Resources Checked: ${totalRemoteResources}`);
+  console.log(`Potential Takeovers: ${potentialTakeovers}`);
+
+  process.exit();
+}
+
+process.on('SIGINT', () => {
+  console.log('\nCTRL+C caught — writing reports...');
+  writeReportsAndExit();
+});
+
+// === MAIN ===
+(async () => {
+  console.log(`The Dangler: Starting audit on ${startUrl}`);
+  if (flags.debug) console.log('Debug mode ON');
+
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+
+  const queue = [startUrl];
+  const visitedPages = new Set();
+  allDiscoveredPages.add(startUrl);
+
+  while (queue.length > 0 && visitedPages.size < maxPages) {
+    const url = queue.shift();
+    if (visitedPages.has(url)) continue;
+
+    const pagesCrawled = visitedPages.size + 1;
+    console.log(`\n[#${pagesCrawled}/${maxPages}] Crawling: ${url}`);
+
+    visitedPages.add(url);
+
+    const resources = [];
+    const uniqueUrls = new Set();
+    page.on('request', request => {
+      const reqUrl = request.url();
+      const domain = new URL(reqUrl).hostname;
+      const isInternal = allowedDomains.some(d => domain.endsWith(d));
+      if (!isInternal && !uniqueUrls.has(reqUrl)) {
+        resources.push({ url: reqUrl, domain, resourceType: request.resourceType() });
+        uniqueUrls.add(reqUrl);
+      }
+    });
+
+    startSpinner('Crawling page...');
+    try {
+      await page.goto(url, { waitUntil: 'networkidle' });
+    } catch {
+      stopSpinner();
+      page.removeAllListeners('request');
+      continue;
+    }
+    stopSpinner();
+
+    const hrefs = await page.$$eval('a[href]', as => as.map(a => a.href));
+    hrefs.forEach(href => {
+      try {
+        const u = new URL(href);
+        if (allowedDomains.some(d => u.hostname.endsWith(d)) && !visitedPages.has(u.href)) {
+          queue.push(u.href);
+          allDiscoveredPages.add(u.href);
+        }
+      } catch {}
+    });
+
+    page.removeAllListeners('request');
+
+    startSpinner('Validating resources...');
+    for (const r of resources) {
+      totalRemoteResources++;
+      const hostCheck = await getHostCheck(r.domain);
+      r.resolves = hostCheck.resolves;
+      r.tcpOk = hostCheck.tcpOk;
+
+      const urlCheck = await getUrlCheck(r.url);
+      r.httpOk = urlCheck.httpOk;
+      r.httpStatusCode = urlCheck.httpStatusCode;
+      r.loadsOtherJS = r.resourceType === 'script' ? urlCheck.loadsOtherJS : false;
+
+      r.possibleTakeover = !r.resolves || !r.tcpOk || !r.httpOk;
+      if (r.possibleTakeover) potentialTakeovers++;
+    }
+    stopSpinner();
+
+    results.push({ page: url, resources });
+  }
+
+  await browser.close();
+  writeReportsAndExit();
+})();
