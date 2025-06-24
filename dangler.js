@@ -83,6 +83,45 @@ function getPath(url) {
   }
 }
 
+function escapeHtml(text) {
+  if (typeof text !== 'string') return '';
+  // Proper HTML encoding - whitelist approach: only allow safe characters
+  return text.replace(/./g, function(char) {
+    const code = char.charCodeAt(0);
+    // Allow alphanumeric, space, and basic punctuation
+    if ((code >= 48 && code <= 57) || // 0-9
+        (code >= 65 && code <= 90) || // A-Z
+        (code >= 97 && code <= 122) || // a-z
+        code === 32 || // space
+        code === 44 || // comma
+        code === 46 || // period
+        code === 45 || // hyphen
+        code === 95) { // underscore
+      return char;
+    }
+    return '&#x' + code.toString(16) + ';';
+  });
+}
+
+function sanitizeUrl(url) {
+  if (typeof url !== 'string') return '';
+  
+  try {
+    const parsed = new URL(url);
+    // Whitelist safe protocols
+    const safeProtocols = ['http:', 'https:', 'ftp:', 'mailto:', 'tel:'];
+    if (!safeProtocols.includes(parsed.protocol)) {
+      return '#blocked'; // Block javascript:, data:, vbscript:, etc.
+    }
+    
+    // Escape quotes in the URL to prevent breaking href attribute
+    return parsed.toString().replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
+  } catch {
+    // If URL parsing fails, it's probably not a valid URL anyway
+    return '#invalid';
+  }
+}
+
 async function withTimeout(promise, ms) {
   const timeout = new Promise((_, reject) =>
     setTimeout(() => reject(new Error(`Timeout after ${ms} ms`)), ms)
@@ -240,9 +279,9 @@ function writeReportsAndExit() {
         else if (!r.tcpOk) reason.push("TCP failure");
         else if (!r.httpOk) reason.push(`HTTP ${r.httpStatusCode}`);
         html += `<tr>
-          <td><a href="${r.url}" target="_blank">${r.url}</a></td>
-          <td><a href="${page.page}" target="_blank">${getPath(page.page)}</a></td>
-          <td>${reason.join(", ")}</td>
+          <td><a href="${sanitizeUrl(r.url)}" target="_blank">${escapeHtml(r.url)}</a></td>
+          <td><a href="${sanitizeUrl(page.page)}" target="_blank">${escapeHtml(getPath(page.page))}</a></td>
+          <td>${escapeHtml(reason.join(", "))}</td>
         </tr>`;
       }
     });
@@ -261,7 +300,7 @@ function writeReportsAndExit() {
   });
   const sortedUnique = Object.entries(unique).sort((a, b) => b[1] - a[1]);
   sortedUnique.forEach(([key, count]) => {
-    html += `<tr><td><a href="${key}" target="_blank">${key}</a></td><td>${count}</td></tr>`;
+    html += `<tr><td><a href="${sanitizeUrl(key)}" target="_blank">${escapeHtml(key)}</a></td><td>${count}</td></tr>`;
   });
   html += `</table>`;
 
@@ -304,70 +343,89 @@ process.on('SIGINT', () => {
   const visitedPages = new Set();
   allDiscoveredPages.add(startUrl);
 
-  while (queue.length > 0 && visitedPages.size < maxPages) {
-    const url = queue.shift();
-    if (visitedPages.has(url)) continue;
+  try {
+    while (queue.length > 0 && visitedPages.size < maxPages) {
+      const url = queue.shift();
+      if (visitedPages.has(url)) continue;
 
-    const pagesCrawled = visitedPages.size + 1;
-    console.log(`\n[#${pagesCrawled}/${maxPages}] Crawling: ${url}`);
+      const pagesCrawled = visitedPages.size + 1;
+      console.log(`\n[#${pagesCrawled}/${maxPages}] Crawling: ${url}`);
 
-    visitedPages.add(url);
+      visitedPages.add(url);
 
-    const resources = [];
-    const uniqueUrls = new Set();
-    page.on('request', request => {
-      const reqUrl = request.url();
-      const domain = new URL(reqUrl).hostname;
-      const isInternal = allowedDomains.some(d => domain.endsWith(d));
-      if (!isInternal && !uniqueUrls.has(reqUrl)) {
-        resources.push({ url: reqUrl, domain, resourceType: request.resourceType() });
-        uniqueUrls.add(reqUrl);
-      }
-    });
-
-    startSpinner('Crawling page...');
-    try {
-      await page.goto(url, { waitUntil: 'networkidle' });
-    } catch {
-      stopSpinner();
-      page.removeAllListeners('request');
-      continue;
-    }
-    stopSpinner();
-
-    const hrefs = await page.$$eval('a[href]', as => as.map(a => a.href));
-    hrefs.forEach(href => {
-      try {
-        const u = new URL(href);
-        if (allowedDomains.some(d => u.hostname.endsWith(d)) && !visitedPages.has(u.href)) {
-          queue.push(u.href);
-          allDiscoveredPages.add(u.href);
+      const resources = [];
+      const uniqueUrls = new Set();
+      page.on('request', request => {
+        const reqUrl = request.url();
+        const domain = new URL(reqUrl).hostname;
+        const isInternal = allowedDomains.some(d => domain.endsWith(d));
+        if (!isInternal && !uniqueUrls.has(reqUrl)) {
+          resources.push({ url: reqUrl, domain, resourceType: request.resourceType() });
+          uniqueUrls.add(reqUrl);
         }
-      } catch {}
-    });
+      });
 
-    page.removeAllListeners('request');
+      startSpinner('Crawling page...');
+      try {
+        await page.goto(url, { waitUntil: 'networkidle' });
+      } catch (error) {
+        stopSpinner();
+        page.removeAllListeners('request');
+        if (flags.debug) console.log(`Failed to load ${url}: ${error.message}`);
+        continue;
+      }
+      stopSpinner();
 
-    startSpinner('Validating resources...');
-    for (const r of resources) {
-      totalRemoteResources++;
-      const hostCheck = await getHostCheck(r.domain);
-      r.resolves = hostCheck.resolves;
-      r.tcpOk = hostCheck.tcpOk;
+      const hrefs = await page.$$eval('a[href]', as => as.map(a => a.href));
+      hrefs.forEach(href => {
+        try {
+          const u = new URL(href);
+          if (allowedDomains.some(d => u.hostname.endsWith(d)) && !visitedPages.has(u.href)) {
+            queue.push(u.href);
+            allDiscoveredPages.add(u.href);
+          }
+        } catch {}
+      });
 
-      const urlCheck = await getUrlCheck(r.url);
-      r.httpOk = urlCheck.httpOk;
-      r.httpStatusCode = urlCheck.httpStatusCode;
-      r.loadsOtherJS = r.resourceType === 'script' ? urlCheck.loadsOtherJS : false;
+      page.removeAllListeners('request');
 
-      r.possibleTakeover = !r.resolves || !r.tcpOk || !r.httpOk;
-      if (r.possibleTakeover) potentialTakeovers++;
+      startSpinner('Validating resources...');
+      try {
+        for (const r of resources) {
+          totalRemoteResources++;
+          const hostCheck = await getHostCheck(r.domain);
+          r.resolves = hostCheck.resolves;
+          r.tcpOk = hostCheck.tcpOk;
+
+          const urlCheck = await getUrlCheck(r.url);
+          r.httpOk = urlCheck.httpOk;
+          r.httpStatusCode = urlCheck.httpStatusCode;
+          r.loadsOtherJS = r.resourceType === 'script' ? urlCheck.loadsOtherJS : false;
+
+          r.possibleTakeover = !r.resolves || !r.tcpOk || !r.httpOk;
+          if (r.possibleTakeover) potentialTakeovers++;
+        }
+      } catch (error) {
+        stopSpinner();
+        if (flags.debug) console.log(`Error validating resources for ${url}: ${error.message}`);
+        // Continue with the page even if resource validation fails
+      }
+      stopSpinner();
+
+      results.push({ page: url, resources });
     }
-    stopSpinner();
-
-    results.push({ page: url, resources });
+  } catch (error) {
+    stopSpinner(); // Ensure spinner is stopped on any error
+    console.error(`Fatal error during crawling: ${error.message}`);
+    if (flags.debug) console.error(error.stack);
+  } finally {
+    // Always close browser resources
+    try {
+      await browser.close();
+    } catch (error) {
+      console.error(`Error closing browser: ${error.message}`);
+    }
   }
 
-  await browser.close();
   writeReportsAndExit();
 })();
