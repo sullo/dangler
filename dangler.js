@@ -694,89 +694,125 @@ process.on('SIGINT', () => {
 
   const maxResources = flags.maxResources;
 
-  try {
-    while (queue.length > 0 && visitedPages.size < maxPages && totalRemoteResources < maxResources) {
-      const url = queue.shift();
-      if (visitedPages.has(url)) continue;
-
-      const pagesCrawled = visitedPages.size + 1;
-      console.log(`\n[#${pagesCrawled}/${maxPages}] Crawling: ${url}`);
-
-      visitedPages.add(url);
-
-      // Reset for this crawl
-      resources = [];
-      uniqueUrls = new Set();
-
-      startSpinner('Crawling page...');
-      try {
-        await scanPage.goto(url, { waitUntil: 'networkidle' });
-      } catch (error) {
-        stopSpinner();
-        if (flags.debug) console.log(`Failed to load ${url}: ${error.message}`);
-        continue;
-      }
-      stopSpinner();
-
-      const hrefs = await scanPage.$$eval('a[href]', as => as.map(a => a.href));
-      hrefs.forEach(href => {
-        try {
-          const u = new URL(href);
-          if (allowedDomains.some(d => u.hostname.endsWith(d)) && !visitedPages.has(u.href)) {
-            queue.push(u.href);
-            allDiscoveredPages.add(u.href);
-          }
-        } catch {}
-      });
-
-      startSpinner('Validating resources...');
-      try {
-        for (const r of resources) {
-          if (totalRemoteResources >= maxResources) {
-            console.warn(`Max resources checked (${maxResources}) reached. Ending scan.`);
-            writeReportsAndExit();
-            return;
-          }
-          totalRemoteResources++;
-          try {
-            const hostCheck = await getHostCheck(r.domain);
-            r.resolves = hostCheck.resolves;
-            r.tcpOk = hostCheck.tcpOk;
-
-            const urlCheck = await getUrlCheck(r.url);
-            r.httpOk = urlCheck.httpOk;
-            r.httpStatusCode = urlCheck.httpStatusCode;
-            r.loadsOtherJS = r.resourceType === 'script' ? urlCheck.loadsOtherJS : false;
-
-            r.possibleTakeover = !r.resolves || !r.tcpOk || !r.httpOk;
-            if (r.possibleTakeover) potentialTakeovers++;
-          } catch (resourceError) {
-            if (flags.debug) console.log(`Error validating resource ${r.url}: ${resourceError.message}`);
-            // Set default values for failed resource
-            r.resolves = false;
-            r.tcpOk = false;
-            r.httpOk = false;
-            r.httpStatusCode = 0;
-            r.loadsOtherJS = false;
-            r.possibleTakeover = true;
-            potentialTakeovers++;
-          }
+  // Add a simple async pool utility
+  async function asyncPool(poolLimit, array, iteratorFn) {
+    const ret = [];
+    const executing = [];
+    for (const item of array) {
+      const p = Promise.resolve().then(() => iteratorFn(item));
+      ret.push(p);
+      if (poolLimit <= array.length) {
+        const e = p.then(() => executing.splice(executing.indexOf(e), 1));
+        executing.push(e);
+        if (executing.length >= poolLimit) {
+          await Promise.race(executing);
         }
-      } catch (error) {
-        stopSpinner();
-        if (flags.debug) console.log(`Error validating resources for ${url}: ${error.message}`);
-        // Continue with the page even if resource validation fails
-      }
-      stopSpinner();
-
-      results.push({ page: url, resources });
-
-      if (visitedPages.size >= maxPages) {
-        console.warn(`Max pages crawled (${maxPages}) reached. Ending scan.`);
-        writeReportsAndExit();
-        return;
       }
     }
+    return Promise.all(ret);
+  }
+
+  try {
+    // Shared state for all crawl workers
+    const queue = [flags.url];
+    const visitedPages = new Set();
+    allDiscoveredPages.add(flags.url);
+
+    // Handler-scoped variables
+    let results = [];
+    let totalRemoteResources = 0;
+    let potentialTakeovers = 0;
+
+    // Crawl worker function
+    async function crawlWorker() {
+      while (queue.length > 0 && visitedPages.size < maxPages && totalRemoteResources < maxResources) {
+        const url = queue.shift();
+        if (!url || visitedPages.has(url)) continue;
+
+        const pagesCrawled = visitedPages.size + 1;
+        console.log(`\n[#${pagesCrawled}/${maxPages}] Crawling: ${url}`);
+
+        visitedPages.add(url);
+
+        // Reset for this crawl
+        resources = [];
+        uniqueUrls = new Set();
+
+        startSpinner('Crawling page...');
+        try {
+          await scanPage.goto(url, { waitUntil: 'networkidle' });
+        } catch (error) {
+          stopSpinner();
+          if (flags.debug) console.log(`Failed to load ${url}: ${error.message}`);
+          continue;
+        }
+        stopSpinner();
+
+        const hrefs = await scanPage.$$eval('a[href]', as => as.map(a => a.href));
+        hrefs.forEach(href => {
+          try {
+            const u = new URL(href);
+            if (allowedDomains.some(d => u.hostname.endsWith(d)) && !visitedPages.has(u.href)) {
+              queue.push(u.href);
+              allDiscoveredPages.add(u.href);
+            }
+          } catch {}
+        });
+
+        startSpinner('Validating resources...');
+        try {
+          await asyncPool(flags.threadsResource, resources, async (r) => {
+            if (totalRemoteResources >= maxResources) return;
+            try {
+              totalRemoteResources++;
+              const hostCheck = await getHostCheck(r.domain);
+              r.resolves = hostCheck.resolves;
+              r.tcpOk = hostCheck.tcpOk;
+
+              const urlCheck = await getUrlCheck(r.url);
+              r.httpOk = urlCheck.httpOk;
+              r.httpStatusCode = urlCheck.httpStatusCode;
+              r.loadsOtherJS = r.resourceType === 'script' ? urlCheck.loadsOtherJS : false;
+
+              r.possibleTakeover = !r.resolves || !r.tcpOk || !r.httpOk;
+              if (r.possibleTakeover) potentialTakeovers++;
+            } catch (resourceError) {
+              if (flags.debug) console.log(`Error validating resource ${r.url}: ${resourceError.message}`);
+              // Set default values for failed resource
+              r.resolves = false;
+              r.tcpOk = false;
+              r.httpOk = false;
+              r.httpStatusCode = 0;
+              r.loadsOtherJS = false;
+              r.possibleTakeover = true;
+              potentialTakeovers++;
+            }
+          });
+        } catch (error) {
+          stopSpinner();
+          if (flags.debug) console.log(`Error validating resources for ${url}: ${error.message}`);
+          // Continue with the page even if resource validation fails
+        }
+        stopSpinner();
+
+        results.push({ page: url, resources });
+
+        if (visitedPages.size >= maxPages) {
+          console.warn(`Max pages crawled (${maxPages}) reached. Ending scan.`);
+          writeReportsAndExit();
+          return;
+        }
+        if (totalRemoteResources >= maxResources) {
+          console.warn(`Max resources checked (${maxResources}) reached. Ending scan.`);
+          writeReportsAndExit();
+          return;
+        }
+      }
+    }
+
+    // Launch crawl workers
+    await asyncPool(flags.threadsCrawl, Array(flags.threadsCrawl).fill(0), crawlWorker);
+
   } catch (error) {
     stopSpinner(); // Ensure spinner is stopped on any error
     console.error(`Fatal error during crawling: ${error.message}`);
