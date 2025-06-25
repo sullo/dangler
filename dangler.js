@@ -384,6 +384,20 @@ process.on('SIGINT', () => {
   const visitedPages = new Set();
   allDiscoveredPages.add(startUrl);
 
+  // Handler-scoped variables
+  let resources = [];
+  let uniqueUrls = new Set();
+  page.on('request', request => {
+    const reqUrl = request.url();
+    if (reqUrl.startsWith('blob:')) return;
+    const domain = new URL(reqUrl).hostname;
+    const isInternal = allowedDomains.some(d => domain.endsWith(d));
+    if (!isInternal && !uniqueUrls.has(reqUrl)) {
+      resources.push({ url: reqUrl, domain, resourceType: request.resourceType() });
+      uniqueUrls.add(reqUrl);
+    }
+  });
+
   try {
     while (queue.length > 0 && visitedPages.size < maxPages) {
       const url = queue.shift();
@@ -394,26 +408,15 @@ process.on('SIGINT', () => {
 
       visitedPages.add(url);
 
-      const resources = [];
-      const uniqueUrls = new Set();
-      page.on('request', request => {
-        const reqUrl = request.url();
-        if (reqUrl.startsWith('blob:')) return;
-        
-        const domain = new URL(reqUrl).hostname;
-        const isInternal = allowedDomains.some(d => domain.endsWith(d));
-        if (!isInternal && !uniqueUrls.has(reqUrl)) {
-          resources.push({ url: reqUrl, domain, resourceType: request.resourceType() });
-          uniqueUrls.add(reqUrl);
-        }
-      });
+      // Reset for this crawl
+      resources = [];
+      uniqueUrls = new Set();
 
       startSpinner('Crawling page...');
       try {
         await page.goto(url, { waitUntil: 'networkidle' });
       } catch (error) {
         stopSpinner();
-        page.removeAllListeners('request');
         if (flags.debug) console.log(`Failed to load ${url}: ${error.message}`);
         continue;
       }
@@ -429,8 +432,6 @@ process.on('SIGINT', () => {
           }
         } catch {}
       });
-
-      page.removeAllListeners('request');
 
       startSpinner('Validating resources...');
       try {
