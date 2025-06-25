@@ -366,7 +366,13 @@ process.on('SIGINT', () => {
   if (flags.debug) console.log('Debug mode ON');
 
   const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext();
+  const contextOptions = {};
+  if (flags.proxy) {
+    contextOptions.proxy = { server: flags.proxy };
+    contextOptions.ignoreHTTPSErrors = true;
+    console.warn('[!] Proxy mode: ignoring certificate errors for browser traffic. Results may include insecure connections.');
+  }
+  const context = await browser.newContext(contextOptions);
   const page = await context.newPage();
 
   const queue = [startUrl];
