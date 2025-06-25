@@ -18,10 +18,16 @@ It crawls a target website, discovers all pages, captures all external requests 
    npm install
    ```
 
+3. Install Playwright browsers:
+   ```bash
+   npx playwright install
+   ```
+
    *(If you don't have a `package.json`, initialize first with:)*  
    ```bash
    npm init -y
    npm install playwright
+   npx playwright install
    ```
 
 ---
