@@ -427,11 +427,26 @@ process.on('SIGINT', () => {
     await context.addCookies(allCookies);
   }
 
-  // Add headers if specified
+  // Add headers if specified, but only for target domain and subdomains
+  let extraHeaders = null;
   if (flags.headers.length > 0) {
-    const extraHeaders = parseHeaders(flags.headers);
-    if (flags.debug) console.log('Setting extra HTTP headers:', extraHeaders);
-    await page.setExtraHTTPHeaders(extraHeaders);
+    extraHeaders = parseHeaders(flags.headers);
+    if (flags.debug) console.log('Setting extra HTTP headers (scoped):', extraHeaders);
+    await page.route('**', (route, request) => {
+      try {
+        const reqUrl = new URL(request.url());
+        // Check if hostname matches target domain or subdomain
+        if (reqUrl.hostname === startDomain || reqUrl.hostname.endsWith('.' + startDomain)) {
+          // Merge headers
+          const merged = { ...request.headers(), ...extraHeaders };
+          route.continue({ headers: merged });
+        } else {
+          route.continue();
+        }
+      } catch (e) {
+        route.continue();
+      }
+    });
   }
 
   const queue = [flags.url];
