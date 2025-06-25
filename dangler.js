@@ -77,15 +77,25 @@ for (let i = 0; i < args.length; i++) {
 }
 
 if (!flags.url) {
-  console.error('Usage: node dangler.js --url <target> [--debug] [--output <base>] [--max-pages <num>] [--proxy <url>] [--timeout <ms>] [--cookie <cookieString>] [--header <headerString>] [--manual]');
+  console.error('Usage: node dangler.js --url <target> [--debug] [--output -dir>] [--max-pages <num>] [--proxy <url>] [--timeout <ms>] [--cookie <cookieString>] [--header <headerString>] [--manual]');
   process.exit(1);
 }
 
 const REMOTE_TIMEOUT_MS = flags.timeout;
 
 const outputBase = flags.output.replace(/\.(json|html)$/i, '');
-const outputJson = `${outputBase}.json`;
-const outputHtml = `${outputBase}.html`;
+
+// New logic for output directory and filenames
+const outputDir = outputBase;
+const useOutputDir = !outputBase.includes('/') && !outputBase.includes('\\');
+let outputJson, outputHtml;
+if (useOutputDir) {
+  outputJson = `${outputDir}/dangler-report.json`;
+  outputHtml = `${outputDir}/index.html`;
+} else {
+  outputJson = `${outputBase}.json`;
+  outputHtml = `${outputBase}.html`;
+}
 
 let startDomain;
 try {
@@ -288,13 +298,14 @@ function stopSpinner() {
 // === REPORT ===
 function writeReportsAndExit() {
   stopSpinner();
-  
-  try {
-    fs.writeFileSync(outputJson, JSON.stringify(results, null, 2));
-    console.log(`\nJSON report saved to: ${outputJson}`);
-  } catch (error) {
-    console.error(`Failed to write JSON report: ${error.message}`);
+  // Create output directory if needed
+  if (useOutputDir) {
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
   }
+  fs.writeFileSync(outputJson, JSON.stringify(results, null, 2));
+  console.log(`\nJSON report saved to: ${outputJson}`);
 
   const pagesCrawled = results.length;
   const totalPagesFound = allDiscoveredPages.size;
@@ -320,9 +331,12 @@ function writeReportsAndExit() {
   }
 
   // --- HTML ---
-  let html = `<html><head><title>The Dangler Report</title><style>
+  let html = `<html><head><title>Dangler Report</title><style>
     body { font-family: sans-serif; margin: 40px; }
-    table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+    table { border-collapse: collapse; margin-bottom: 20px; }
+    .halfwidth { width: 50%; min-width: 350px; }
+    td.label { font-weight: bold; text-align: left; width: 40%; background: #f0f0f0; }
+    td.value { text-align: left; }
     th, td { border: 1px solid #ddd; padding: 8px; }
     th { background: #f0f0f0; }
     a { color: #0645AD; }
@@ -330,9 +344,21 @@ function writeReportsAndExit() {
   </style></head><body>
   <h1>The Dangler</h1>
   <hr>
-  <p><strong>Target:</strong> ${flags.url}<br>
-  <strong>Max Pages:</strong> ${flags.maxPages}<br>
-  <strong>Timestamp:</strong> ${timestamp}</p>`;
+  <h2>Details</h2>
+  <table class="halfwidth">
+    <tr><td class="label">Target</td><td class="value"><code>${escapeHtml(flags.url)}</code></td></tr>
+    <tr><td class="label">Max Pages</td><td class="value"><code>${escapeHtml(String(flags.maxPages))}</code></td></tr>
+    <tr><td class="label">Timestamp</td><td class="value"><code>${escapeHtml(timestamp)}</code></td></tr>
+    <tr><td class="label">CLI Args</td><td class="value"><code>dangler.js ${escapeHtml(process.argv.slice(2).join(' '))}</code></td></tr>
+  </table>`;
+
+  // --- Summary Table ---
+  html += `<h2>Summary</h2>
+   <table class="halfwidth">
+   <tr><td class="label">Pages Crawled</td><td class="value">${pagesCrawled} of ${totalPagesFound}</td></tr>
+   <tr><td class="label">Remote Resources Checked</td><td class="value">${totalRemoteResources}</td></tr>
+   <tr><td class="label">Potential Takeovers</td><td class="value">${potentialTakeovers}</td></tr>
+   </table>`;
 
   // --- Failures Table ---
   html += `<h2>Failures: Could Not Resolve or Retrieve</h2><table><tr><th>Resource URL</th><th>Parent Page</th><th>Reason</th></tr>`;
@@ -369,27 +395,12 @@ function writeReportsAndExit() {
   });
   html += `</table>`;
 
-  // --- Summary Table ---
-  html += `<h2>Scan Summary</h2><table>
-  <tr><th>Metric</th><th>Value</th></tr>
-  <tr><td>Pages Crawled</td><td>${pagesCrawled} of ${totalPagesFound}</td></tr>
-  <tr><td>Remote Resources Checked</td><td>${totalRemoteResources}</td></tr>
-  <tr><td>Potential Takeovers</td><td>${potentialTakeovers}</td></tr>
-  </table></body></html>`;
-
   try {
     fs.writeFileSync(outputHtml, html);
     console.log(`HTML report saved to: ${outputHtml}`);
   } catch (error) {
     console.error(`Failed to write HTML report: ${error.message}`);
   }
-
-  console.log(`\n=== Dangler Scan Summary ===`);
-  console.log(`Target Site: ${flags.url}`);
-  console.log(`Max Pages: ${flags.maxPages}`);
-  console.log(`Pages Crawled: ${pagesCrawled} of ${totalPagesFound}`);
-  console.log(`Remote Resources Checked: ${totalRemoteResources}`);
-  console.log(`Potential Takeovers: ${potentialTakeovers}`);
 
   process.exit();
 }
