@@ -6,8 +6,6 @@ const dns = require('dns');
 const net = require('net');
 const fs = require('fs');
 
-const REMOTE_TIMEOUT_MS = 5000;
-
 // === CLI FLAG PARSER ===
 const args = process.argv.slice(2);
 const flags = {
@@ -15,7 +13,8 @@ const flags = {
   debug: false,
   output: 'dangler_output',
   maxPages: 50,
-  proxy: ''
+  proxy: '',
+  timeout: 5000
 };
 
 for (let i = 0; i < args.length; i++) {
@@ -38,13 +37,22 @@ for (let i = 0; i < args.length; i++) {
   } else if (arg === '--proxy' || arg === '-p') {
     flags.proxy = args[i + 1];
     i++;
+  } else if (arg === '--timeout' || arg === '-t') {
+    flags.timeout = parseInt(args[i + 1], 10);
+    if (isNaN(flags.timeout) || flags.timeout < 1000) {
+      console.error('--timeout must be at least 1000ms (1 second).');
+      process.exit(1);
+    }
+    i++;
   }
 }
 
 if (!flags.url) {
-  console.error('Usage: node dangler.js --url <target> [--debug] [--output <base>] [--max-pages <num>] [--proxy <url>]');
+  console.error('Usage: node dangler.js --url <target> [--debug] [--output <base>] [--max-pages <num>] [--proxy <url>] [--timeout <ms>]');
   process.exit(1);
 }
+
+const REMOTE_TIMEOUT_MS = flags.timeout;
 
 const outputBase = flags.output.replace(/\.(json|html)$/i, '');
 const outputJson = `${outputBase}.json`;
