@@ -115,6 +115,19 @@ let totalRemoteResources = 0;
 let potentialTakeovers = 0;
 const allDiscoveredPages = new Set();
 
+// Helper to format date as MM/DD/YYYY HH:MM:SS (24-hour)
+function formatLocalDate(date) {
+  const pad = n => n.toString().padStart(2, '0');
+  return `${pad(date.getMonth() + 1)}/${pad(date.getDate())}/${date.getFullYear()} ` +
+         `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+// Track scan start time (local)
+const scanStartDate = new Date();
+let scanStartLocal = formatLocalDate(scanStartDate);
+let scanStopLocal = '';
+let scanDuration = '';
+
 // === HELPERS ===
 
 function stripQuery(url) {
@@ -298,6 +311,15 @@ function stopSpinner() {
 // === REPORT ===
 function writeReportsAndExit() {
   stopSpinner();
+  // Set stop time and duration
+  const scanStopDate = new Date();
+  scanStopLocal = formatLocalDate(scanStopDate);
+  const durationMs = scanStopDate - scanStartDate;
+  const hours = Math.floor(durationMs / 3600000);
+  const minutes = Math.floor((durationMs % 3600000) / 60000);
+  const seconds = Math.floor((durationMs % 60000) / 1000);
+  scanDuration = `${hours}h ${minutes}m ${seconds}s`;
+
   // Create output directory if needed
   if (useOutputDir) {
     if (!fs.existsSync(outputDir)) {
@@ -309,7 +331,6 @@ function writeReportsAndExit() {
 
   const pagesCrawled = results.length;
   const totalPagesFound = allDiscoveredPages.size;
-  const timestamp = new Date().toISOString();
 
   // --- Failures to console ---
   const failures = [];
@@ -346,15 +367,17 @@ function writeReportsAndExit() {
   <hr>
   <h2>Details</h2>
   <table class="halfwidth">
-    <tr><td class="label">Target</td><td class="value"><code>${escapeHtml(flags.url)}</code></td></tr>
-    <tr><td class="label">Max Pages</td><td class="value"><code>${escapeHtml(String(flags.maxPages))}</code></td></tr>
-    <tr><td class="label">Timestamp</td><td class="value"><code>${escapeHtml(timestamp)}</code></td></tr>
-    <tr><td class="label">CLI Args</td><td class="value"><code>dangler.js ${escapeHtml(process.argv.slice(2).join(' '))}</code></td></tr>
+    <tr><td class="label">Target</td><td class="value">${escapeHtml(flags.url)}</td></tr>
+    <tr><td class="label">Max Pages</td><td class="value">${escapeHtml(String(flags.maxPages))}</td></tr>
+    <tr><td class="label">CLI Args</td><td class="value">dangler.js ${escapeHtml(process.argv.slice(2).join(' '))}</td></tr>
   </table>`;
 
   // --- Summary Table ---
   html += `<h2>Summary</h2>
    <table class="halfwidth">
+   <tr><td class="label">Start</td><td class="value">${escapeHtml(scanStartLocal)}</td></tr>
+   <tr><td class="label">Stop</td><td class="value">${escapeHtml(scanStopLocal)}</td></tr>
+   <tr><td class="label">Duration</td><td class="value">${escapeHtml(scanDuration)}</td></tr>
    <tr><td class="label">Pages Crawled</td><td class="value">${pagesCrawled} of ${totalPagesFound}</td></tr>
    <tr><td class="label">Remote Resources Checked</td><td class="value">${totalRemoteResources}</td></tr>
    <tr><td class="label">Potential Takeovers</td><td class="value">${potentialTakeovers}</td></tr>
