@@ -376,7 +376,7 @@ process.on('SIGINT', () => {
   if (flags.debug) console.log('Debug mode ON');
 
   const browser = await chromium.launch({ headless: true });
-  const contextOptions = {};
+  const contextOptions = { userAgent: DEFAULT_USER_AGENT };
   if (flags.proxy) {
     contextOptions.proxy = { server: flags.proxy };
     contextOptions.ignoreHTTPSErrors = true;
@@ -490,3 +490,6 @@ process.on('SIGINT', () => {
 
   writeReportsAndExit();
 })();
+
+// Modern Chromium user agent (Chrome 124 on macOS)
+const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.91 Safari/537.36';
