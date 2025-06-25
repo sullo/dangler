@@ -2,12 +2,23 @@
 import http.server
 import socketserver
 import sys
+import os
 
 PORT = 8001
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
-        if self.path == "/" or self.path == "/index.html":
+        if self.path == "/robots.txt":
+            self.send_response(200)
+            self.send_header("Content-type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"""User-agent: *
+Disallow: /private/
+Disallow: /admin/
+Allow: /public/
+Crawl-delay: 1
+""")
+        elif self.path == "/" or self.path == "/index.html":
             self.send_response(200)
             self.send_header("Content-type", "text/html")
             self.end_headers()
@@ -103,6 +114,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 <p>This page is missing the &lt;html&gt; tag and has bad includes.</p>
 <p>The dangler.js parser should detect all the remote resources above as potential takeover targets.</p>
 
+<h2>Navigation to Subdirectories</h2>
+<ul>
+<li><a href="/public/">Public Directory</a></li>
+<li><a href="/private/">Private Directory (should be blocked by robots.txt)</a></li>
+<li><a href="/admin/">Admin Directory (should be blocked by robots.txt)</a></li>
+</ul>
+
 <h1>URL Protocol Tests (as links for reference)</h1>
 <a href="javascript:alert('xss')">javascript:alert('xss')</a><br>
 <a href="data:text/html,<script>alert('xss')</script>">data:text/html,<script>alert('xss')</script></a><br>
@@ -110,6 +128,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 <a href="file:///etc/passwd">file:///etc/passwd</a><br>
 <a href="about:blank">about:blank</a><br>
 <a href="chrome://settings">chrome://settings</a><br>
+<a href="/public">public</a><br>
+<a href="/private">private</a><br>
+<a href="/admin">admin</a><br>
 
 <h1>URL with Special Characters Tests (as links for reference)</h1>
 <a href="https://example.com/path with spaces">https://example.com/path with spaces</a><br>
@@ -148,12 +169,157 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 </body>
 """)
+        elif self.path == "/public/" or self.path == "/public/index.html":
+            self.send_response(200)
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Public Directory</title>
+    <script src="https://example.com/public-script.js"></script>
+    <link rel="stylesheet" href="https://example.com/public-style.css">
+</head>
+<body>
+    <h1>Public Directory</h1>
+    <p>This directory should be allowed by robots.txt</p>
+    <p><a href="/">Back to Home</a></p>
+    <p><a href="/public/page2.html">Page 2</a></p>
+    <p><a href="/public/page3.html">Page 3</a></p>
+    
+    <img src="https://example.com/public-image.jpg">
+    <script src="https://cdn.example.com/public-library.js"></script>
+</body>
+</html>""")
+        elif self.path == "/public/page2.html":
+            self.send_response(200)
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Public Page 2</title>
+    <script src="https://example.com/page2-script.js"></script>
+</head>
+<body>
+    <h1>Public Page 2</h1>
+    <p>This is page 2 in the public directory</p>
+    <p><a href="/public/">Back to Public Directory</a></p>
+    <p><a href="/">Back to Home</a></p>
+    
+    <img src="https://example.com/page2-image.png">
+</body>
+</html>""")
+        elif self.path == "/public/page3.html":
+            self.send_response(200)
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Public Page 3</title>
+    <link rel="stylesheet" href="https://example.com/page3-style.css">
+</head>
+<body>
+    <h1>Public Page 3</h1>
+    <p>This is page 3 in the public directory</p>
+    <p><a href="/public/">Back to Public Directory</a></p>
+    <p><a href="/">Back to Home</a></p>
+    
+    <script src="https://example.com/page3-script.js"></script>
+</body>
+</html>""")
+        elif self.path == "/private/" or self.path == "/private/index.html":
+            self.send_response(200)
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Private Directory</title>
+    <script src="https://example.com/private-script.js"></script>
+    <link rel="stylesheet" href="https://example.com/private-style.css">
+</head>
+<body>
+    <h1>Private Directory</h1>
+    <p>This directory should be blocked by robots.txt</p>
+    <p><a href="/">Back to Home</a></p>
+    <p><a href="/private/secret.html">Secret Page</a></p>
+    
+    <img src="https://example.com/private-image.jpg">
+    <script src="https://cdn.example.com/private-library.js"></script>
+</body>
+</html>""")
+        elif self.path == "/private/secret.html":
+            self.send_response(200)
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Secret Page</title>
+    <script src="https://example.com/secret-script.js"></script>
+</head>
+<body>
+    <h1>Secret Page</h1>
+    <p>This is a secret page that should be blocked by robots.txt</p>
+    <p><a href="/private/">Back to Private Directory</a></p>
+    <p><a href="/">Back to Home</a></p>
+    
+    <img src="https://example.com/secret-image.png">
+</body>
+</html>""")
+        elif self.path == "/admin/" or self.path == "/admin/index.html":
+            self.send_response(200)
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Admin Directory</title>
+    <script src="https://example.com/admin-script.js"></script>
+    <link rel="stylesheet" href="https://example.com/admin-style.css">
+</head>
+<body>
+    <h1>Admin Directory</h1>
+    <p>This directory should be blocked by robots.txt</p>
+    <p><a href="/">Back to Home</a></p>
+    <p><a href="/admin/dashboard.html">Admin Dashboard</a></p>
+    
+    <img src="https://example.com/admin-image.jpg">
+    <script src="https://cdn.example.com/admin-library.js"></script>
+</body>
+</html>""")
+        elif self.path == "/admin/dashboard.html":
+            self.send_response(200)
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Admin Dashboard</title>
+    <script src="https://example.com/dashboard-script.js"></script>
+</head>
+<body>
+    <h1>Admin Dashboard</h1>
+    <p>This is an admin dashboard that should be blocked by robots.txt</p>
+    <p><a href="/admin/">Back to Admin Directory</a></p>
+    <p><a href="/">Back to Home</a></p>
+    
+    <img src="https://example.com/dashboard-image.png">
+</body>
+</html>""")
         else:
             self.send_error(404, "File Not Found")
 
 try:
     with socketserver.TCPServer(("", PORT), Handler) as httpd:
         print(f"🚀 Serving test page at http://localhost:{PORT}")
+        print("📁 Available directories:")
+        print("   - /public/ (allowed by robots.txt)")
+        print("   - /private/ (blocked by robots.txt)")
+        print("   - /admin/ (blocked by robots.txt)")
+        print("📄 robots.txt available at http://localhost:{PORT}/robots.txt")
         print("Press Ctrl+C to stop the server")
         httpd.serve_forever()
 except OSError as e:

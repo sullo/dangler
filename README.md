@@ -53,14 +53,19 @@ node dangler.js --url <target-site> [options]
 - `--manual` or `-M` — Open a non-headless browser window for manual login or interaction. Close the window to continue the scan with your session.
 - `--debug` or `-d` — Enable debug output for extra detail.
 
-### Additional Options
+### Resource and Performance Options
 
-- `--max-resources <num>`, `-R <num>`: Maximum number of remote resources to check (default: 1000). If this limit is reached, the scan will end early with a warning.
+- `--max-resources` or `-R` — Maximum number of remote resources to check (default: 1000). If this limit is reached, the scan will end early with a warning.
+- `--threads-crawl` or `-tc` — Number of concurrent page crawlers to use (default: 5).
+- `--threads-resource` or `-tr` — Number of concurrent resource checks to use (default: 10).
 
-### Concurrency Options
+### Crawling Behavior Options
 
-- `--threads-crawl <num>`, `-tc <num>`: Number of concurrent page crawlers to use (default: 5).
-- `--threads-resource <num>`, `-tr <num>`: Number of concurrent resource checks to use (default: 10).
+- `--robots` or `-r` — Honor robots.txt rules when crawling. Fetches and parses robots.txt from the target domain and respects Disallow/Allow directives and Crawl-delay settings.
+
+### Help
+
+- `--help` or `-h` — Show help message with all available options.
 
 ### Example:
 ```bash
@@ -73,13 +78,63 @@ node dangler.js --url https://example.com \
   --cookie "session=abc123; HttpOnly" \
   --header "X-Test: foo" \
   --header "User-Agent: custom UA" \
+  --robots \
   --manual
 ```
 
-- This will set the cookies `foo=bar`, `baz=qux` (with Path, Domain, Secure), and `session=abc123` (with HttpOnly), send the specified HTTP headers with every request, and allow you to log in manually before the scan continues.
+- This will set the cookies `foo=bar`, `baz=qux` (with Path, Domain, Secure), and `session=abc123` (with HttpOnly), send the specified HTTP headers with every request, honor robots.txt rules, and allow you to log in manually before the scan continues.
 
 ### Outputs:
-- `myreport.json`
+- `myreport.json` — Detailed JSON report with all findings
+- `myreport/index.html` — HTML report with summary and detailed breakdowns
+- `myreport/dns-failures.html` — List of DNS failures
+- `myreport/connect-failures.html` — List of connection failures  
+- `myreport/http-failures.html` — List of HTTP failures
+- `myreport/all-resources.html` — All resources checked
+- `myreport/unique-resources.html` — Unique resources (deduplicated)
+- `myreport/console-log.html` — Console output during scan
+
+## Takeover Detection
+
+The Dangler includes intelligent takeover detection that focuses on domains where user-created content is actually possible:
+
+- **DNS failures** — Always flagged as potential takeovers
+- **TCP failures** — Always flagged as potential takeovers
+- **HTTP 4xx failures** — Only flagged as potential takeovers for domains in the takeover targets list
+- **HTTP 5xx failures** — Not flagged as takeovers (server errors)
+
+The takeover targets list is defined in `takeover-targets.json` and currently includes:
+- `github.com`
+- `githubpages.com`
+
+You can modify this file to add or remove domains based on your assessment needs.
+
+## Robots.txt Support
+
+When using the `--robots` flag, The Dangler will:
+
+1. Fetch `/robots.txt` from the target domain immediately after connection
+2. Parse User-agent, Disallow, Allow, and Crawl-delay directives
+3. Respect the rules during crawling:
+   - Skip URLs that match Disallow patterns
+   - Allow URLs that match Allow patterns (overrides Disallow)
+   - Apply Crawl-delay timing between requests
+4. Cache robots.txt rules to avoid repeated fetches
+
+Example robots.txt behavior:
+```
+User-agent: *
+Disallow: /admin/
+Disallow: /private/
+Allow: /public/
+Crawl-delay: 1
+```
+
+With `--robots` flag:
+- ✅ Crawls: `https://example.com/public/page`
+- ❌ Skips: `https://example.com/admin/dashboard`
+- ❌ Skips: `https://example.com/private/data`
+- ⏱️ Waits 1 second between requests
 
 ## Authentication Methods
 

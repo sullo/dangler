@@ -8,6 +8,116 @@ const dns = require('dns');
 const net = require('net');
 const fs = require('fs');
 
+// Load takeover targets
+let takeoverTargets = [];
+try {
+  const takeoverData = fs.readFileSync('takeover-targets.json', 'utf8');
+  const takeoverConfig = JSON.parse(takeoverData);
+  takeoverTargets = takeoverConfig.domains || [];
+} catch (error) {
+  console.warn('Warning: Could not load takeover-targets.json, using empty list');
+  takeoverTargets = [];
+}
+
+// Helper function to check if a domain is a potential takeover target
+function isTakeoverTarget(domain) {
+  return takeoverTargets.some(target => domain === target || domain.endsWith('.' + target));
+}
+
+// Robots.txt parsing and checking
+const robotsCache = new Map();
+
+async function fetchRobotsTxt(baseUrl, page) {
+  try {
+    const robotsUrl = new URL('/robots.txt', baseUrl).toString();
+    const response = await page.goto(robotsUrl, { 
+      waitUntil: 'domcontentloaded',
+      timeout: REMOTE_TIMEOUT_MS
+    });
+    
+    if (response && response.ok()) {
+      return await page.textContent('body');
+    }
+  } catch (error) {
+    if (flags.debug) console.log(`[DEBUG] Failed to fetch robots.txt: ${error.message}`);
+  }
+  return null;
+}
+
+function parseRobotsTxt(content) {
+  const rules = {
+    userAgents: [],
+    disallow: [],
+    allow: [],
+    crawlDelay: null
+  };
+  
+  if (!content) return rules;
+  
+  const lines = content.split('\n').map(line => line.trim());
+  let currentUserAgent = '*';
+  
+  for (const line of lines) {
+    if (line.startsWith('User-agent:')) {
+      currentUserAgent = line.substring(11).trim();
+      if (currentUserAgent === '*' || currentUserAgent.toLowerCase() === 'dangler') {
+        rules.userAgents.push(currentUserAgent);
+      }
+    } else if (line.startsWith('Disallow:') && rules.userAgents.includes(currentUserAgent)) {
+      const path = line.substring(9).trim();
+      if (path) rules.disallow.push(path);
+    } else if (line.startsWith('Allow:') && rules.userAgents.includes(currentUserAgent)) {
+      const path = line.substring(6).trim();
+      if (path) rules.allow.push(path);
+    } else if (line.startsWith('Crawl-delay:') && rules.userAgents.includes(currentUserAgent)) {
+      const delay = parseInt(line.substring(12).trim(), 10);
+      if (!isNaN(delay)) rules.crawlDelay = delay;
+    }
+  }
+  
+  return rules;
+}
+
+function isUrlAllowed(url, robotsRules) {
+  if (!robotsRules || robotsRules.userAgents.length === 0) {
+    return true; // No robots.txt or no rules for our user agent
+  }
+  
+  const urlPath = new URL(url).pathname;
+  
+  // Check allow rules first (more specific)
+  for (const allowPath of robotsRules.allow) {
+    if (urlPath.startsWith(allowPath)) {
+      return true;
+    }
+  }
+  
+  // Check disallow rules
+  for (const disallowPath of robotsRules.disallow) {
+    if (urlPath.startsWith(disallowPath)) {
+      return false;
+    }
+  }
+  
+  return true; // Default allow if no specific rules match
+}
+
+async function getRobotsRules(baseUrl, page) {
+  if (robotsCache.has(baseUrl)) {
+    return robotsCache.get(baseUrl);
+  }
+  
+  const content = await fetchRobotsTxt(baseUrl, page);
+  const rules = parseRobotsTxt(content);
+  robotsCache.set(baseUrl, rules);
+  
+  if (flags.debug && content) {
+    console.log(`[DEBUG] Loaded robots.txt for ${baseUrl}:`, rules);
+  }
+  
+  return rules;
+}
+
 // === CLI FLAG PARSER ===
 const args = process.argv.slice(2);
 const validFlags = new Set([
@@ -23,7 +133,8 @@ const validFlags = new Set([
   '--max-resources', '-R',
   '--threads-crawl', '-tc',
   '--threads-resource', '-tr',
-  '--help', '-h'
+  '--help', '-h',
+  '--robots', '-r'
 ]);
 
 const flags = {
@@ -38,10 +149,11 @@ const flags = {
   timeout: 5000,
   cookies: [],
   headers: [],
-  manual: false
+  manual: false,
+  robots: false
 };
 
-const usageString = `\nUsage: node dangler.js --url <target> [options]\n\nRequired:\n  --url, -u <target>           Target website to crawl\n\nCommon options:\n  --output, -o <base>          Base name for output files (.json, .html). Default: dangler_output\n  --max-pages, -m <num>        Max pages to crawl. Default: 50\n  --proxy, -p <url>            Proxy URL (e.g. for Burp/ZAP)\n  --timeout, -t <ms>           Timeout for remote resource checks in ms. Default: 5000\n  --cookie, -C <cookie>        Set cookies for the browser session (can use multiple times)\n  --header, -H <header>        Set extra HTTP headers (can use multiple times)\n  --manual, -M                 Open browser for manual login/interaction\n  --debug, -d                  Enable debug output\n  --max-resources, -R <num>    Max number of remote resources to check (default: 1000)\n  --threads-crawl, -tc <num>   Number of concurrent page crawlers (default: 5)\n  --threads-resource, -tr <num>Number of concurrent resource checks (default: 10)\n  --help, -h                   Show this help message\n`;
+const usageString = `\nUsage: node dangler.js --url <target> [options]\n\nRequired:\n  --url, -u <target>           Target website to crawl\n\nCommon options:\n  --output, -o <base>          Base name for output files (.json, .html). Default: dangler_output\n  --max-pages, -m <num>        Max pages to crawl. Default: 50\n  --proxy, -p <url>            Proxy URL (e.g. for Burp/ZAP)\n  --timeout, -t <ms>           Timeout for remote resource checks in ms. Default: 5000\n  --cookie, -C <cookie>        Set cookies for the browser session (can use multiple times)\n  --header, -H <header>        Set extra HTTP headers (can use multiple times)\n  --manual, -M                 Open browser for manual login/interaction\n  --debug, -d                  Enable debug output\n  --max-resources, -R <num>    Max number of remote resources to check (default: 1000)\n  --threads-crawl, -tc <num>   Number of concurrent page crawlers (default: 5)\n  --threads-resource, -tr <num>Number of concurrent resource checks (default: 10)\n  --robots, -r                 Honor robots.txt rules when crawling\n  --help, -h                   Show this help message\n`;
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -108,6 +220,8 @@ for (let i = 0; i < args.length; i++) {
     i++;
   } else if (arg === '--manual' || arg === '-M') {
     flags.manual = true;
+  } else if (arg === '--robots' || arg === '-r') {
+    flags.robots = true;
   }
 }
 
@@ -719,22 +833,36 @@ process.on('SIGINT', () => {
   // Add a simple async pool utility
   async function asyncPool(poolLimit, array, iteratorFn) {
     const ret = [];
-    const executing = [];
+    const executing = new Set();
+    
     for (const item of array) {
       const p = Promise.resolve().then(() => iteratorFn(item));
       ret.push(p);
-      if (poolLimit <= array.length) {
-        const e = p.then(() => executing.splice(executing.indexOf(e), 1));
-        executing.push(e);
-        if (executing.length >= poolLimit) {
-          await Promise.race(executing);
-        }
+      executing.add(p);
+      
+      // Wait if we've reached the pool limit
+      if (executing.size >= poolLimit) {
+        await Promise.race(executing);
       }
+      
+      // Clean up when promise completes
+      p.finally(() => executing.delete(p));
     }
+    
     return Promise.all(ret);
   }
 
   try {
+    // Load robots.txt rules if enabled (after browser setup)
+    let robotsRules = null;
+    if (flags.robots) {
+      const baseUrl = new URL(flags.url).origin;
+      robotsRules = await getRobotsRules(baseUrl, scanPage);
+      if (flags.debug) {
+        console.log(`[DEBUG] Robots.txt enabled for ${baseUrl}`);
+      }
+    }
+
     // Shared state for all crawl workers
     const queue = [flags.url];
     const visitedPages = new Set();
@@ -746,10 +874,24 @@ process.on('SIGINT', () => {
         const url = queue.shift();
         if (!url || visitedPages.has(url)) continue;
 
+        // Check robots.txt if enabled
+        if (flags.robots && robotsRules) {
+          if (!isUrlAllowed(url, robotsRules)) {
+            if (flags.debug) console.log(`[DEBUG] Skipping ${url} (disallowed by robots.txt)`);
+            continue;
+          }
+        }
+
         const pagesCrawled = visitedPages.size + 1;
         console.log(`\n[#${pagesCrawled}/${maxPages}] Crawling: ${url}`);
 
         visitedPages.add(url);
+
+        // Apply crawl delay if specified in robots.txt
+        if (flags.robots && robotsRules && robotsRules.crawlDelay) {
+          if (flags.debug) console.log(`[DEBUG] Crawl delay: ${robotsRules.crawlDelay}s`);
+          await new Promise(resolve => setTimeout(resolve, robotsRules.crawlDelay * 1000));
+        }
 
         // Make these local to the worker
         let resources = [];
@@ -784,6 +926,13 @@ process.on('SIGINT', () => {
           try {
             const u = new URL(href);
             if (allowedDomains.some(d => u.hostname.endsWith(d)) && !visitedPages.has(u.href)) {
+              // Check robots.txt if enabled
+              if (flags.robots && robotsRules) {
+                if (!isUrlAllowed(u.href, robotsRules)) {
+                  if (flags.debug) console.log(`[DEBUG] Not queueing ${u.href} (disallowed by robots.txt)`);
+                  return;
+                }
+              }
               queue.push(u.href);
               allDiscoveredPages.add(u.href);
             }
@@ -804,7 +953,7 @@ process.on('SIGINT', () => {
               r.httpStatusCode = urlCheck.httpStatusCode;
               r.loadsOtherJS = r.resourceType === 'script' ? urlCheck.loadsOtherJS : false;
 
-              r.possibleTakeover = !r.resolves || !r.tcpOk || !r.httpOk;
+              r.possibleTakeover = !r.resolves || !r.tcpOk || (!r.httpOk && isTakeoverTarget(r.domain));
               if (r.possibleTakeover) potentialTakeovers++;
             } catch (resourceError) {
               if (flags.debug) console.log(`Error validating resource ${r.url}: ${resourceError.message}`);
@@ -814,8 +963,8 @@ process.on('SIGINT', () => {
               r.httpOk = false;
               r.httpStatusCode = 0;
               r.loadsOtherJS = false;
-              r.possibleTakeover = true;
-              potentialTakeovers++;
+              r.possibleTakeover = !r.resolves || !r.tcpOk || (!r.httpOk && isTakeoverTarget(r.domain));
+              if (r.possibleTakeover) potentialTakeovers++;
             }
           });
         } catch (error) {
