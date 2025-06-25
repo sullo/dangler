@@ -1,3 +1,5 @@
+// Modern Chromium user agent (Chrome 124 on macOS)
+const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.91 Safari/537.36';
 // The Dangler - dangler.js
 // Full version: HTTP status code, deduped resources, clear failure output
 
@@ -402,28 +404,30 @@ process.on('SIGINT', () => {
   console.log(`The Dangler: Starting audit on ${flags.url}`);
   if (flags.debug) console.log('Debug mode ON');
 
-  const browser = await chromium.launch({ headless: !flags.manual });
+  // Prepare context options before browser creation
   const contextOptions = { userAgent: DEFAULT_USER_AGENT };
   if (flags.proxy) {
     contextOptions.proxy = { server: flags.proxy };
     contextOptions.ignoreHTTPSErrors = true;
     console.warn('[!] Proxy mode: ignoring certificate errors for browser traffic. Results may include insecure connections.');
   }
-  const context = await browser.newContext(contextOptions);
-  const page = await context.newPage();
 
-  // Use these variables for the scan context/page
   let scanContext, scanPage;
 
-  // Manual login mode: let user interact, then continue scan after ENTER
   if (flags.manual) {
+    console.log('[Manual Mode] You must come back to this terminal and press ENTER to continue after logging in.');
+    console.log('[Manual Mode] Press ENTER now to open the browser window.');
+    await new Promise(resolve => process.stdin.once('data', resolve));
+    const browserManual = await chromium.launch({ headless: false });
+    const contextManual = await browserManual.newContext(contextOptions);
+    const pageManual = await contextManual.newPage();
     console.log('[Manual Mode] Please log in or interact with the browser window.');
     console.log('[Manual Mode] When finished, press ENTER in this terminal to continue. Do NOT close the browser window yourself.');
-    await page.goto(flags.url);
+    await pageManual.goto(flags.url);
     await new Promise(resolve => process.stdin.once('data', resolve));
     // Extract cookies and storage from manual session
-    const cookies = await context.cookies();
-    await browser.close();
+    const cookies = await contextManual.cookies();
+    await browserManual.close();
     // Re-launch browser in headless mode for the scan
     const browser2 = await chromium.launch({ headless: true });
     const context2 = await browser2.newContext(contextOptions);
@@ -433,6 +437,9 @@ process.on('SIGINT', () => {
     scanPage = page2;
     console.log('[Manual Mode] Scan will continue with your session cookies.');
   } else {
+    const browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext(contextOptions);
+    const page = await context.newPage();
     scanContext = context;
     scanPage = page;
   }
@@ -583,9 +590,6 @@ process.on('SIGINT', () => {
 
   writeReportsAndExit();
 })();
-
-// Modern Chromium user agent (Chrome 124 on macOS)
-const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.91 Safari/537.36';
 
 // Helper to parse cookie string like from a proxy
 function parseCookieString(cookieString, defaultDomain) {
