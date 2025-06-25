@@ -233,9 +233,14 @@ async function checkTCP(hostname) {
 
 async function checkHTTP(url) {
   if (!url.startsWith('http')) return { ok: false, status: 0 };
-  return withTimeout(fetch(url, { method: 'HEAD' })
-    .then(res => ({ ok: res.status < 400, status: res.status }))
-  , REMOTE_TIMEOUT_MS).catch(() => ({ ok: false, status: 0 }));
+  try {
+    return await withTimeout(fetch(url, { method: 'HEAD' })
+      .then(res => ({ ok: res.status < 400, status: res.status })), REMOTE_TIMEOUT_MS);
+  } catch (err) {
+    if (flags.debug) console.log('[DEBUG] checkHTTP error for', url, ':', err && err.message);
+    // If fetch fails (e.g., connection refused), treat as not ok
+    return { ok: false, status: 0, error: err };
+  }
 }
 
 async function analyzeJS(url) {
@@ -281,7 +286,8 @@ async function getUrlCheck(url) {
     loadsOtherJS = await analyzeJS(url);
   }
 
-  const result = { httpOk: httpRes.ok, httpStatusCode: httpRes.status, loadsOtherJS };
+  // Always provide httpOk and httpStatusCode, even if fetch failed
+  const result = { httpOk: !!(httpRes && httpRes.ok), httpStatusCode: httpRes && typeof httpRes.status === 'number' ? httpRes.status : 0, loadsOtherJS };
   urlCheckCache.set(cacheKey, result);
   return result;
 }
