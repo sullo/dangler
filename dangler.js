@@ -20,7 +20,9 @@ const validFlags = new Set([
   '--cookie', '-C',
   '--header', '-H',
   '--manual', '-M',
-  '--max-resources', '-R'
+  '--max-resources', '-R',
+  '--threads-crawl', '-tc',
+  '--threads-resource', '-tr'
 ]);
 
 const flags = {
@@ -29,6 +31,8 @@ const flags = {
   output: 'dangler_output',
   maxPages: 50,
   maxResources: 1000,
+  threadsCrawl: 5,
+  threadsResource: 10,
   proxy: '',
   timeout: 5000,
   cookies: [],
@@ -61,6 +65,20 @@ for (let i = 0; i < args.length; i++) {
     flags.maxResources = parseInt(args[i + 1], 10);
     if (isNaN(flags.maxResources) || flags.maxResources < 1) {
       console.error('--max-resources must be a positive integer.');
+      process.exit(1);
+    }
+    i++;
+  } else if (arg === '--threads-crawl' || arg === '-tc') {
+    flags.threadsCrawl = parseInt(args[i + 1], 10);
+    if (isNaN(flags.threadsCrawl) || flags.threadsCrawl < 1) {
+      console.error('--threads-crawl must be a positive integer.');
+      process.exit(1);
+    }
+    i++;
+  } else if (arg === '--threads-resource' || arg === '-tr') {
+    flags.threadsResource = parseInt(args[i + 1], 10);
+    if (isNaN(flags.threadsResource) || flags.threadsResource < 1) {
+      console.error('--threads-resource must be a positive integer.');
       process.exit(1);
     }
     i++;
