@@ -8,16 +8,6 @@ const fs = require('fs');
 
 // === CLI FLAG PARSER ===
 const args = process.argv.slice(2);
-const flags = {
-  url: '',
-  debug: false,
-  output: 'dangler_output',
-  maxPages: 50,
-  proxy: '',
-  timeout: 5000,
-  cookies: []
-};
-
 const validFlags = new Set([
   '--url', '-u',
   '--debug', '-d',
@@ -25,8 +15,20 @@ const validFlags = new Set([
   '--max-pages', '-m',
   '--proxy', '-p',
   '--timeout', '-t',
-  '--cookie', '-C'
+  '--cookie', '-C',
+  '--header', '-H'
 ]);
+
+const flags = {
+  url: '',
+  debug: false,
+  output: 'dangler_output',
+  maxPages: 50,
+  proxy: '',
+  timeout: 5000,
+  cookies: [],
+  headers: []
+};
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -62,11 +64,14 @@ for (let i = 0; i < args.length; i++) {
   } else if (arg === '--cookie' || arg === '-C') {
     flags.cookies.push(args[i + 1]);
     i++;
+  } else if (arg === '--header' || arg === '-H') {
+    flags.headers.push(args[i + 1]);
+    i++;
   }
 }
 
 if (!flags.url) {
-  console.error('Usage: node dangler.js --url <target> [--debug] [--output <base>] [--max-pages <num>] [--proxy <url>] [--timeout <ms>] [--cookie <cookieString>]');
+  console.error('Usage: node dangler.js --url <target> [--debug] [--output <base>] [--max-pages <num>] [--proxy <url>] [--timeout <ms>] [--cookie <cookieString>] [--header <headerString>]');
   process.exit(1);
 }
 
@@ -422,6 +427,13 @@ process.on('SIGINT', () => {
     await context.addCookies(allCookies);
   }
 
+  // Add headers if specified
+  if (flags.headers.length > 0) {
+    const extraHeaders = parseHeaders(flags.headers);
+    if (flags.debug) console.log('Setting extra HTTP headers:', extraHeaders);
+    await page.setExtraHTTPHeaders(extraHeaders);
+  }
+
   const queue = [flags.url];
   const visitedPages = new Set();
   allDiscoveredPages.add(flags.url);
@@ -572,4 +584,24 @@ function parseCookieString(cookieString, defaultDomain) {
     });
   }
   return cookies;
+}
+
+// Helper to parse headers
+function parseHeaders(headerStrings) {
+  const headers = {};
+  for (const h of headerStrings) {
+    const idx = h.indexOf(':');
+    if (idx === -1) {
+      console.error(`Invalid header format: ${h}`);
+      process.exit(1);
+    }
+    const name = h.slice(0, idx).trim();
+    const value = h.slice(idx + 1).trim();
+    if (!name) {
+      console.error(`Invalid header name in: ${h}`);
+      process.exit(1);
+    }
+    headers[name] = value;
+  }
+  return headers;
 }

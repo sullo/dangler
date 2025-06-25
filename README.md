@@ -49,6 +49,7 @@ node dangler.js --url <target-site> [options]
 - `--proxy` or `-p` — Proxy URL (e.g. for Burp/ZAP).
 - `--timeout` or `-t` — Timeout for remote resource checks in milliseconds. Default: `5000` (5 seconds).
 - `--cookie` or `-C` — Set cookies for the browser session. Accepts a string in the format you'd copy from a browser or proxy, e.g. `foo=bar; baz=qux; Path=/; Domain=example.com; Secure`. You can use this flag multiple times.
+- `--header` or `-H` — Set extra HTTP headers for all requests. Use multiple times for multiple headers, e.g. `-H "X-Test: foo" -H "User-Agent: custom"`.
 - `--debug` or `-d` — Enable debug output for extra detail.
 
 ### Example:
@@ -59,17 +60,12 @@ node dangler.js --url https://example.com \
   --proxy http://localhost:8080 \
   --timeout 10000 \
   --cookie "foo=bar; baz=qux; Path=/; Domain=example.com; Secure" \
-  --cookie "session=abc123; HttpOnly"
+  --cookie "session=abc123; HttpOnly" \
+  --header "X-Test: foo" \
+  --header "User-Agent: custom UA"
 ```
 
-- This will set the cookies `foo=bar`, `baz=qux` (with Path, Domain, Secure), and `session=abc123` (with HttpOnly) for the browser session.
+- This will set the cookies `foo=bar`, `baz=qux` (with Path, Domain, Secure), and `session=abc123` (with HttpOnly), and send the specified HTTP headers with every request.
 
 ### Outputs:
-- `myreport.json` — raw data for analysis.
-- `myreport.html` — clean, readable report with failures, third-party domains, and a scan summary.
-
----
-
-##  Copyright
-
-(c) Hack.LLC 2025
+- `myreport.json`
