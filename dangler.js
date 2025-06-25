@@ -124,6 +124,27 @@ let totalRemoteResources = 0;
 let potentialTakeovers = 0;
 const allDiscoveredPages = new Set();
 
+// Add a variable to capture console output
+let consoleLogBuffer = '';
+const origConsoleLog = console.log;
+const origConsoleWarn = console.warn;
+const origConsoleError = console.error;
+console.log = function(...args) {
+  const msg = args.map(String).join(' ');
+  consoleLogBuffer += msg + '\n';
+  origConsoleLog.apply(console, args);
+};
+console.warn = function(...args) {
+  const msg = args.map(String).join(' ');
+  consoleLogBuffer += '[WARN] ' + msg + '\n';
+  origConsoleWarn.apply(console, args);
+};
+console.error = function(...args) {
+  const msg = args.map(String).join(' ');
+  consoleLogBuffer += '[ERROR] ' + msg + '\n';
+  origConsoleError.apply(console, args);
+};
+
 // Helper to format date as MM/DD/YYYY HH:MM:SS (24-hour)
 function formatLocalDate(date) {
   const pad = n => n.toString().padStart(2, '0');
@@ -393,6 +414,7 @@ function writeReportsAndExit() {
    <tr><td class="label">Pages Crawled</td><td class="value">${pagesCrawled} of ${totalPagesFound}</td></tr>
    <tr><td class="label">Remote Resources Checked</td><td class="value">${totalRemoteResources}</td></tr>
    <tr><td class="label">Potential Takeovers</td><td class="value">${potentialTakeovers}</td></tr>
+   <tr><td class="label">Console Log</td><td class="value"><a href="console-log.html">View</a></td></tr>
    </table>`;
 
   // --- Count failure types and unique resources ---
@@ -518,6 +540,26 @@ function writeReportsAndExit() {
   } catch (error) {
     console.error(`Failed to write HTML report: ${error.message}`);
   }
+
+  // At the end of writeReportsAndExit, write the console log page
+  function writeConsoleLogPage() {
+    let subHtml = `<html><head><title>Console Log - Dangler Report</title><meta name="referrer" content="no-referrer"><style>
+      body { font-family: sans-serif; margin: 40px; }
+      pre { background: #f8f8f8; border: 1px solid #ddd; padding: 16px; overflow-x: auto; }
+      a { color: #0645AD; }
+    </style></head><body>
+    <h1>The Dangler</h1>
+    <hr>
+    <a href="index.html">&larr; Back to Summary</a>
+    <h2>Console Log</h2>
+    <pre>${escapeHtml(consoleLogBuffer)}</pre>
+    </body></html>`;
+    const outPath = useOutputDir ? `${outputDir}/console-log.html` : 'console-log.html';
+    fs.writeFileSync(outPath, subHtml);
+  }
+
+  // Call this at the end of writeReportsAndExit
+  writeConsoleLogPage();
 
   process.exit();
 }
