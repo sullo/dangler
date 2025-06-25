@@ -58,8 +58,13 @@ const outputBase = flags.output.replace(/\.(json|html)$/i, '');
 const outputJson = `${outputBase}.json`;
 const outputHtml = `${outputBase}.html`;
 
-const startUrl = flags.url;
-const startDomain = (new URL(startUrl)).hostname;
+let startDomain;
+try {
+  startDomain = (new URL(flags.url)).hostname;
+} catch (e) {
+  console.error(`Invalid URL provided: ${flags.url}`);
+  process.exit(1);
+}
 const allowedDomains = [startDomain];
 const maxPages = flags.maxPages;
 
@@ -367,7 +372,7 @@ process.on('SIGINT', () => {
 
 // === MAIN ===
 (async () => {
-  console.log(`The Dangler: Starting audit on ${startUrl}`);
+  console.log(`The Dangler: Starting audit on ${flags.url}`);
   if (flags.debug) console.log('Debug mode ON');
 
   const browser = await chromium.launch({ headless: true });
@@ -380,9 +385,9 @@ process.on('SIGINT', () => {
   const context = await browser.newContext(contextOptions);
   const page = await context.newPage();
 
-  const queue = [startUrl];
+  const queue = [flags.url];
   const visitedPages = new Set();
-  allDiscoveredPages.add(startUrl);
+  allDiscoveredPages.add(flags.url);
 
   // Handler-scoped variables
   let resources = [];
