@@ -71,3 +71,47 @@ node dangler.js --url https://example.com \
 
 ### Outputs:
 - `myreport.json`
+
+## Authentication Methods
+
+When scanning sites that require authentication, Dangler supports several methods for providing credentials:
+
+### 1. Using Cookies (via CLI)
+You can pass one or more cookies directly on the command line using the `--cookie` or `-C` flag.  
+Example:
+```sh
+node dangler.js --url https://example.com \
+  --cookie "sessionid=YOUR_SESSION_COOKIE; Path=/; Domain=example.com; Secure"
+```
+You can repeat the `--cookie` flag to add multiple cookies.
+
+### 2. Using Custom Headers (via CLI)
+You can add arbitrary HTTP headers (such as `Authorization` or custom tokens) using the `--header` or `-H` flag.  
+Example:
+```sh
+node dangler.js --url https://example.com \
+  --header "Authorization: Bearer YOUR_TOKEN_HERE" \
+  --header "X-Custom-Header: value"
+```
+You can repeat the `--header` flag to add multiple headers.
+
+### 3. Using Manual Mode and Browser
+For complex authentication (such as multi-factor or SSO), use the `--manual` or `-M` flag to launch the browser in interactive mode:
+```sh
+node dangler.js --url https://example.com --manual
+```
+This will open a browser window where you can log in manually. Once authenticated, Dangler will continue crawling with your session.
+
+---
+
+### Capturing Cookies and Headers with a Proxy
+
+If you're unsure which cookies or headers are needed, or want to capture them from a real login session, you can use a proxy tool like **Burp Suite** or **OWASP ZAP**:
+
+1. Set your browser to use the proxy (e.g., Burp).
+2. Log in to the target site through the browser.
+3. Inspect the requests in the proxy to find the relevant cookies and headers.
+4. Copy these values and supply them to Dangler using the `--cookie` and `--header` flags as shown above.
+
+---
+
