@@ -14,7 +14,8 @@ const flags = {
   output: 'dangler_output',
   maxPages: 50,
   proxy: '',
-  timeout: 5000
+  timeout: 5000,
+  cookies: []
 };
 
 for (let i = 0; i < args.length; i++) {
@@ -44,11 +45,14 @@ for (let i = 0; i < args.length; i++) {
       process.exit(1);
     }
     i++;
+  } else if (arg === '--cookie' || arg === '-C') {
+    flags.cookies.push(args[i + 1]);
+    i++;
   }
 }
 
 if (!flags.url) {
-  console.error('Usage: node dangler.js --url <target> [--debug] [--output <base>] [--max-pages <num>] [--proxy <url>] [--timeout <ms>]');
+  console.error('Usage: node dangler.js --url <target> [--debug] [--output <base>] [--max-pages <num>] [--proxy <url>] [--timeout <ms>] [--cookie <cookieString>]');
   process.exit(1);
 }
 
@@ -385,6 +389,25 @@ process.on('SIGINT', () => {
   const context = await browser.newContext(contextOptions);
   const page = await context.newPage();
 
+  // Add cookies if specified
+  if (flags.cookies.length > 0) {
+    const defaultDomain = startDomain;
+    let allCookies = [];
+    for (const cookieString of flags.cookies) {
+      allCookies = allCookies.concat(parseCookieString(cookieString, defaultDomain));
+    }
+    // Remove undefined attributes (Playwright will error if they're present)
+    allCookies = allCookies.map(c => {
+      const out = {};
+      for (const k in c) {
+        if (c[k] !== undefined) out[k] = c[k];
+      }
+      return out;
+    });
+    if (flags.debug) console.log('Setting cookies:', allCookies);
+    await context.addCookies(allCookies);
+  }
+
   const queue = [flags.url];
   const visitedPages = new Set();
   allDiscoveredPages.add(flags.url);
@@ -493,3 +516,46 @@ process.on('SIGINT', () => {
 
 // Modern Chromium user agent (Chrome 124 on macOS)
 const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.91 Safari/537.36';
+
+// Helper to parse cookie string like from a proxy
+function parseCookieString(cookieString, defaultDomain) {
+  // Split by semicolon, trim whitespace
+  const parts = cookieString.split(';').map(p => p.trim()).filter(Boolean);
+  const cookies = [];
+  let attributes = {};
+  let pairs = [];
+  for (const part of parts) {
+    const eqIdx = part.indexOf('=');
+    if (eqIdx > 0) {
+      const name = part.slice(0, eqIdx).trim();
+      const value = part.slice(eqIdx + 1).trim();
+      // Check for known attributes
+      const lname = name.toLowerCase();
+      if (['path', 'domain', 'expires', 'samesite'].includes(lname)) {
+        attributes[lname] = value;
+      } else {
+        pairs.push({ name, value });
+      }
+    } else {
+      // Attributes like Secure, HttpOnly
+      const lname = part.toLowerCase();
+      if (['secure', 'httponly'].includes(lname)) {
+        attributes[lname] = true;
+      }
+    }
+  }
+  // For each name/value, create a cookie object with attributes
+  for (const pair of pairs) {
+    cookies.push({
+      name: pair.name,
+      value: pair.value,
+      domain: attributes.domain || defaultDomain,
+      path: attributes.path || '/',
+      expires: attributes.expires ? new Date(attributes.expires).getTime() / 1000 : undefined,
+      sameSite: attributes.samesite ? attributes.samesite : undefined,
+      secure: attributes.secure || false,
+      httpOnly: attributes.httponly || false
+    });
+  }
+  return cookies;
+}
