@@ -131,10 +131,15 @@ function sanitizeUrl(url) {
 }
 
 async function withTimeout(promise, ms) {
-  const timeout = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error(`Timeout after ${ms} ms`)), ms)
-  );
-  return Promise.race([promise, timeout]);
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(`Timeout after ${ms} ms`)), ms);
+  });
+  // Ensure the original promise's rejection is always handled
+  return Promise.race([
+    promise.finally(() => clearTimeout(timeoutId)).catch(() => {}),
+    timeout
+  ]);
 }
 
 async function resolveHost(hostname) {
