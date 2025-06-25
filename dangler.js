@@ -383,6 +383,30 @@ function writeReportsAndExit() {
    <tr><td class="label">Potential Takeovers</td><td class="value">${potentialTakeovers}</td></tr>
    </table>`;
 
+  // --- Count failure types and unique resources ---
+  let dnsFailures = 0, connectFailures = 0, httpFailures = 0;
+  const allCheckedResources = [];
+  results.forEach(page => {
+    page.resources.forEach(r => {
+      allCheckedResources.push(r.url);
+      if (!r.resolves) dnsFailures++;
+      else if (!r.tcpOk) connectFailures++;
+      else if (!r.httpOk) httpFailures++;
+    });
+  });
+  const totalChecked = allCheckedResources.length;
+  const uniqueChecked = new Set(allCheckedResources).size;
+
+  // --- Details Table ---
+  html += `<h2>Details</h2>
+   <table class="halfwidth">
+   <tr><td class="label">DNS Failures</td><td class="value">${dnsFailures}</td></tr>
+   <tr><td class="label">Connect Failures</td><td class="value">${connectFailures}</td></tr>
+   <tr><td class="label">HTTP Failures</td><td class="value">${httpFailures}</td></tr>
+   <tr><td class="label">Total Resources Checked</td><td class="value">${totalChecked}</td></tr>
+   <tr><td class="label">Total Unique Resources</td><td class="value">${uniqueChecked}</td></tr>
+   </table>`;
+
   // --- Failures Table ---
   html += `<h2>Failures: Could Not Resolve or Retrieve</h2><table><tr><th>Resource URL</th><th>Parent Page</th><th>Reason</th></tr>`;
   results.forEach(page => {
