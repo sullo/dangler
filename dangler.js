@@ -18,8 +18,22 @@ const flags = {
   cookies: []
 };
 
+const validFlags = new Set([
+  '--url', '-u',
+  '--debug', '-d',
+  '--output', '-o',
+  '--max-pages', '-m',
+  '--proxy', '-p',
+  '--timeout', '-t',
+  '--cookie', '-C'
+]);
+
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
+  if (arg.startsWith('-') && !validFlags.has(arg)) {
+    console.error(`Unknown flag: ${arg}`);
+    process.exit(1);
+  }
   if (arg === '--url' || arg === '-u') {
     flags.url = args[i + 1];
     i++;
