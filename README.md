@@ -53,6 +53,10 @@ node dangler.js --url <target-site> [options]
 - `--manual` or `-M` — Open a non-headless browser window for manual login or interaction. Close the window to continue the scan with your session.
 - `--debug` or `-d` — Enable debug output for extra detail.
 
+### Additional Options
+
+- `--max-resources <num>`, `-R <num>`: Maximum number of remote resources to check (default: 1000). If this limit is reached, the scan will end early with a warning.
+
 ### Example:
 ```bash
 node dangler.js --url https://example.com \

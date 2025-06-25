@@ -19,7 +19,8 @@ const validFlags = new Set([
   '--timeout', '-t',
   '--cookie', '-C',
   '--header', '-H',
-  '--manual', '-M'
+  '--manual', '-M',
+  '--max-resources', '-R'
 ]);
 
 const flags = {
@@ -27,6 +28,7 @@ const flags = {
   debug: false,
   output: 'dangler_output',
   maxPages: 50,
+  maxResources: 1000,
   proxy: '',
   timeout: 5000,
   cookies: [],
@@ -52,6 +54,13 @@ for (let i = 0; i < args.length; i++) {
     flags.maxPages = parseInt(args[i + 1], 10);
     if (isNaN(flags.maxPages) || flags.maxPages < 1) {
       console.error('--max-pages must be a positive integer.');
+      process.exit(1);
+    }
+    i++;
+  } else if (arg === '--max-resources' || arg === '-R') {
+    flags.maxResources = parseInt(args[i + 1], 10);
+    if (isNaN(flags.maxResources) || flags.maxResources < 1) {
+      console.error('--max-resources must be a positive integer.');
       process.exit(1);
     }
     i++;
@@ -623,8 +632,10 @@ process.on('SIGINT', () => {
     }
   });
 
+  const maxResources = flags.maxResources;
+
   try {
-    while (queue.length > 0 && visitedPages.size < maxPages) {
+    while (queue.length > 0 && visitedPages.size < maxPages && totalRemoteResources < maxResources) {
       const url = queue.shift();
       if (visitedPages.has(url)) continue;
 
@@ -661,8 +672,13 @@ process.on('SIGINT', () => {
       startSpinner('Validating resources...');
       try {
         for (const r of resources) {
+          if (totalRemoteResources >= maxResources) {
+            console.warn(`Max resources checked (${maxResources}) reached. Ending scan.`);
+            writeReportsAndExit();
+            return;
+          }
+          totalRemoteResources++;
           try {
-            totalRemoteResources++;
             const hostCheck = await getHostCheck(r.domain);
             r.resolves = hostCheck.resolves;
             r.tcpOk = hostCheck.tcpOk;
@@ -694,6 +710,12 @@ process.on('SIGINT', () => {
       stopSpinner();
 
       results.push({ page: url, resources });
+
+      if (visitedPages.size >= maxPages) {
+        console.warn(`Max pages crawled (${maxPages}) reached. Ending scan.`);
+        writeReportsAndExit();
+        return;
+      }
     }
   } catch (error) {
     stopSpinner(); // Ensure spinner is stopped on any error
