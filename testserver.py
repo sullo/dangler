@@ -20,6 +20,47 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 <link rel="stylesheet" href="https://c0.wp.com/c/6.7.2/wp-includes/css/dist/block-library/style.min.css">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans%3A400%2C300%2C600%2C700%2C800&ver=6.7.2">
 
+		<!-- Facebook Pixel Code -->
+		<script>
+			var aepc_pixel = {"pixel_id":"aaa126749094662441","user":{"em":"aaaa1f0172fb0217bbd3ef802215b85276e6a0e8d487e49643565555c9a70f974e9","external_id":"1"},"enable_advanced_events":"yes","fire_delay":"0","can_use_sku":"yes"},
+				aepc_pixel_args = [],
+				aepc_extend_args = function( args ) {
+					if ( typeof args === 'undefined' ) {
+						args = {};
+					}
+
+					for(var key in aepc_pixel_args)
+						args[key] = aepc_pixel_args[key];
+
+					return args;
+				};
+
+			// Extend args
+			if ( 'yes' === aepc_pixel.enable_advanced_events ) {
+				aepc_pixel_args.userAgent = navigator.userAgent;
+				aepc_pixel_args.language = navigator.language;
+
+				if ( document.referrer.indexOf( document.domain ) < 0 ) {
+					aepc_pixel_args.referrer = document.referrer;
+				}
+			}
+
+						!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+				n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;
+				n.push=n;n.loaded=!0;n.version='2.0';n.agent='dvpixelcaffeinewordpress';n.queue=[];t=b.createElement(e);t.async=!0;
+				t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,
+				document,'script','https://connect.facebook.net/en_US/fbevents.js');
+			
+						fbq('init', aepc_pixel.pixel_id, aepc_pixel.user);
+
+							setTimeout( function() {
+				fbq('track', "PageView", aepc_pixel_args);
+			}, aepc_pixel.fire_delay * 1000 );
+					</script>
+				<noscript><img height="1" width="1" style="display:none" src="https://www.facebook.com/tr?id=aaa126749094662441&ev=PageView&noscript=1"
+			/></noscript>
+				<!-- End Facebook Pixel Code -->
+
 <!-- XSS Test Cases as Remote Resources -->
 <script src="javascript:alert('xss')"></script>
 <script src="data:text/html,<script>alert('xss')</script>"></script>
