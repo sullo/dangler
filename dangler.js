@@ -241,8 +241,13 @@ function stopSpinner() {
 // === REPORT ===
 function writeReportsAndExit() {
   stopSpinner();
-  fs.writeFileSync(outputJson, JSON.stringify(results, null, 2));
-  console.log(`\nJSON report saved to: ${outputJson}`);
+  
+  try {
+    fs.writeFileSync(outputJson, JSON.stringify(results, null, 2));
+    console.log(`\nJSON report saved to: ${outputJson}`);
+  } catch (error) {
+    console.error(`Failed to write JSON report: ${error.message}`);
+  }
 
   const pagesCrawled = results.length;
   const totalPagesFound = allDiscoveredPages.size;
@@ -320,8 +325,12 @@ function writeReportsAndExit() {
   <tr><td>Potential Takeovers</td><td>${potentialTakeovers}</td></tr>
   </table></body></html>`;
 
-  fs.writeFileSync(outputHtml, html);
-  console.log(`HTML report saved to: ${outputHtml}`);
+  try {
+    fs.writeFileSync(outputHtml, html);
+    console.log(`HTML report saved to: ${outputHtml}`);
+  } catch (error) {
+    console.error(`Failed to write HTML report: ${error.message}`);
+  }
 
   console.log(`\n=== Dangler Scan Summary ===`);
   console.log(`Target Site: ${flags.url}`);
@@ -400,18 +409,30 @@ process.on('SIGINT', () => {
       startSpinner('Validating resources...');
       try {
         for (const r of resources) {
-          totalRemoteResources++;
-          const hostCheck = await getHostCheck(r.domain);
-          r.resolves = hostCheck.resolves;
-          r.tcpOk = hostCheck.tcpOk;
+          try {
+            totalRemoteResources++;
+            const hostCheck = await getHostCheck(r.domain);
+            r.resolves = hostCheck.resolves;
+            r.tcpOk = hostCheck.tcpOk;
 
-          const urlCheck = await getUrlCheck(r.url);
-          r.httpOk = urlCheck.httpOk;
-          r.httpStatusCode = urlCheck.httpStatusCode;
-          r.loadsOtherJS = r.resourceType === 'script' ? urlCheck.loadsOtherJS : false;
+            const urlCheck = await getUrlCheck(r.url);
+            r.httpOk = urlCheck.httpOk;
+            r.httpStatusCode = urlCheck.httpStatusCode;
+            r.loadsOtherJS = r.resourceType === 'script' ? urlCheck.loadsOtherJS : false;
 
-          r.possibleTakeover = !r.resolves || !r.tcpOk || !r.httpOk;
-          if (r.possibleTakeover) potentialTakeovers++;
+            r.possibleTakeover = !r.resolves || !r.tcpOk || !r.httpOk;
+            if (r.possibleTakeover) potentialTakeovers++;
+          } catch (resourceError) {
+            if (flags.debug) console.log(`Error validating resource ${r.url}: ${resourceError.message}`);
+            // Set default values for failed resource
+            r.resolves = false;
+            r.tcpOk = false;
+            r.httpOk = false;
+            r.httpStatusCode = 0;
+            r.loadsOtherJS = false;
+            r.possibleTakeover = true;
+            potentialTakeovers++;
+          }
         }
       } catch (error) {
         stopSpinner();
