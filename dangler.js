@@ -150,11 +150,19 @@ async function checkTCP(hostname) {
   if (!hostname) return false;
   return withTimeout(new Promise((resolve) => {
     const socket = net.connect(80, hostname);
+    
     socket.on('connect', () => {
-      socket.end();
+      socket.destroy();
       resolve(true);
     });
+    
     socket.on('error', () => {
+      socket.destroy();
+      resolve(false);
+    });
+    
+    socket.on('timeout', () => {
+      socket.destroy();
       resolve(false);
     });
   }), REMOTE_TIMEOUT_MS).catch(() => false);
@@ -254,7 +262,7 @@ function writeReportsAndExit() {
   const timestamp = new Date().toISOString();
 
   // --- Failures to console ---
-  console.log(`\n❌ Failures:`);
+  const failures = [];
   results.forEach(page => {
     page.resources.forEach(r => {
       if (!r.resolves || !r.tcpOk || !r.httpOk) {
@@ -262,10 +270,15 @@ function writeReportsAndExit() {
         if (!r.resolves) reason.push("DNS failure");
         else if (!r.tcpOk) reason.push("TCP failure");
         else if (!r.httpOk) reason.push(`HTTP ${r.httpStatusCode}`);
-        console.log(`   [!] ${r.url} (${reason.join(', ')}) on ${page.page}`);
+        failures.push(`   [!] ${r.url} (${reason.join(', ')}) on ${page.page}`);
       }
     });
   });
+
+  if (failures.length > 0) {
+    console.log(`\n❌ Failures:`);
+    failures.forEach(failure => console.log(failure));
+  }
 
   // --- HTML ---
   let html = `<html><head><title>The Dangler Report</title><style>
@@ -374,6 +387,8 @@ process.on('SIGINT', () => {
       const uniqueUrls = new Set();
       page.on('request', request => {
         const reqUrl = request.url();
+        if (reqUrl.startsWith('blob:')) return;
+        
         const domain = new URL(reqUrl).hostname;
         const isInternal = allowedDomains.some(d => domain.endsWith(d));
         if (!isInternal && !uniqueUrls.has(reqUrl)) {
