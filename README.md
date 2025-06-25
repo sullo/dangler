@@ -50,6 +50,7 @@ node dangler.js --url <target-site> [options]
 - `--timeout` or `-t` — Timeout for remote resource checks in milliseconds. Default: `5000` (5 seconds).
 - `--cookie` or `-C` — Set cookies for the browser session. Accepts a string in the format you'd copy from a browser or proxy, e.g. `foo=bar; baz=qux; Path=/; Domain=example.com; Secure`. You can use this flag multiple times.
 - `--header` or `-H` — Set extra HTTP headers for all requests. Use multiple times for multiple headers, e.g. `-H "X-Test: foo" -H "User-Agent: custom"`.
+- `--manual` or `-M` — Open a non-headless browser window for manual login or interaction. Close the window to continue the scan with your session.
 - `--debug` or `-d` — Enable debug output for extra detail.
 
 ### Example:
@@ -62,10 +63,11 @@ node dangler.js --url https://example.com \
   --cookie "foo=bar; baz=qux; Path=/; Domain=example.com; Secure" \
   --cookie "session=abc123; HttpOnly" \
   --header "X-Test: foo" \
-  --header "User-Agent: custom UA"
+  --header "User-Agent: custom UA" \
+  --manual
 ```
 
-- This will set the cookies `foo=bar`, `baz=qux` (with Path, Domain, Secure), and `session=abc123` (with HttpOnly), and send the specified HTTP headers with every request.
+- This will set the cookies `foo=bar`, `baz=qux` (with Path, Domain, Secure), and `session=abc123` (with HttpOnly), send the specified HTTP headers with every request, and allow you to log in manually before the scan continues.
 
 ### Outputs:
 - `myreport.json`

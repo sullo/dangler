@@ -16,7 +16,8 @@ const validFlags = new Set([
   '--proxy', '-p',
   '--timeout', '-t',
   '--cookie', '-C',
-  '--header', '-H'
+  '--header', '-H',
+  '--manual', '-M'
 ]);
 
 const flags = {
@@ -27,7 +28,8 @@ const flags = {
   proxy: '',
   timeout: 5000,
   cookies: [],
-  headers: []
+  headers: [],
+  manual: false
 };
 
 for (let i = 0; i < args.length; i++) {
@@ -67,11 +69,13 @@ for (let i = 0; i < args.length; i++) {
   } else if (arg === '--header' || arg === '-H') {
     flags.headers.push(args[i + 1]);
     i++;
+  } else if (arg === '--manual' || arg === '-M') {
+    flags.manual = true;
   }
 }
 
 if (!flags.url) {
-  console.error('Usage: node dangler.js --url <target> [--debug] [--output <base>] [--max-pages <num>] [--proxy <url>] [--timeout <ms>] [--cookie <cookieString>] [--header <headerString>]');
+  console.error('Usage: node dangler.js --url <target> [--debug] [--output <base>] [--max-pages <num>] [--proxy <url>] [--timeout <ms>] [--cookie <cookieString>] [--header <headerString>] [--manual]');
   process.exit(1);
 }
 
@@ -398,7 +402,7 @@ process.on('SIGINT', () => {
   console.log(`The Dangler: Starting audit on ${flags.url}`);
   if (flags.debug) console.log('Debug mode ON');
 
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({ headless: !flags.manual });
   const contextOptions = { userAgent: DEFAULT_USER_AGENT };
   if (flags.proxy) {
     contextOptions.proxy = { server: flags.proxy };
@@ -407,6 +411,31 @@ process.on('SIGINT', () => {
   }
   const context = await browser.newContext(contextOptions);
   const page = await context.newPage();
+
+  // Use these variables for the scan context/page
+  let scanContext, scanPage;
+
+  // Manual login mode: let user interact, then continue scan after ENTER
+  if (flags.manual) {
+    console.log('[Manual Mode] Please log in or interact with the browser window.');
+    console.log('[Manual Mode] When finished, press ENTER in this terminal to continue. Do NOT close the browser window yourself.');
+    await page.goto(flags.url);
+    await new Promise(resolve => process.stdin.once('data', resolve));
+    // Extract cookies and storage from manual session
+    const cookies = await context.cookies();
+    await browser.close();
+    // Re-launch browser in headless mode for the scan
+    const browser2 = await chromium.launch({ headless: true });
+    const context2 = await browser2.newContext(contextOptions);
+    const page2 = await context2.newPage();
+    await context2.addCookies(cookies);
+    scanContext = context2;
+    scanPage = page2;
+    console.log('[Manual Mode] Scan will continue with your session cookies.');
+  } else {
+    scanContext = context;
+    scanPage = page;
+  }
 
   // Add cookies if specified
   if (flags.cookies.length > 0) {
@@ -424,7 +453,7 @@ process.on('SIGINT', () => {
       return out;
     });
     if (flags.debug) console.log('Setting cookies:', allCookies);
-    await context.addCookies(allCookies);
+    await scanContext.addCookies(allCookies);
   }
 
   // Add headers if specified, but only for target domain and subdomains
@@ -432,7 +461,7 @@ process.on('SIGINT', () => {
   if (flags.headers.length > 0) {
     extraHeaders = parseHeaders(flags.headers);
     if (flags.debug) console.log('Setting extra HTTP headers (scoped):', extraHeaders);
-    await page.route('**', (route, request) => {
+    scanPage.route('**', (route, request) => {
       try {
         const reqUrl = new URL(request.url());
         // Check if hostname matches target domain or subdomain
@@ -456,7 +485,7 @@ process.on('SIGINT', () => {
   // Handler-scoped variables
   let resources = [];
   let uniqueUrls = new Set();
-  page.on('request', request => {
+  scanPage.on('request', request => {
     const reqUrl = request.url();
     if (reqUrl.startsWith('blob:')) return;
     const domain = new URL(reqUrl).hostname;
@@ -483,7 +512,7 @@ process.on('SIGINT', () => {
 
       startSpinner('Crawling page...');
       try {
-        await page.goto(url, { waitUntil: 'networkidle' });
+        await scanPage.goto(url, { waitUntil: 'networkidle' });
       } catch (error) {
         stopSpinner();
         if (flags.debug) console.log(`Failed to load ${url}: ${error.message}`);
@@ -491,7 +520,7 @@ process.on('SIGINT', () => {
       }
       stopSpinner();
 
-      const hrefs = await page.$$eval('a[href]', as => as.map(a => a.href));
+      const hrefs = await scanPage.$$eval('a[href]', as => as.map(a => a.href));
       hrefs.forEach(href => {
         try {
           const u = new URL(href);
@@ -546,7 +575,7 @@ process.on('SIGINT', () => {
   } finally {
     // Always close browser resources
     try {
-      await browser.close();
+      await scanContext.browser().close();
     } catch (error) {
       console.error(`Error closing browser: ${error.message}`);
     }
