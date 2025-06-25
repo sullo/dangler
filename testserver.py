@@ -69,12 +69,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 <script src="about:blank"></script>
 <script src="chrome://settings"></script>
 
-<link rel="stylesheet" href="https://example.com/path with spaces">
-<link rel="stylesheet" href="https://example.com/path&quot;with&quot;quotes">
-<link rel="stylesheet" href="https://example.com/path'with'single'quotes">
-<link rel="stylesheet" href="https://example.com/path<with>angle>brackets">
-<link rel="stylesheet" href="https://example.com/path&with&amps">
-<link rel="stylesheet" href="https://example.com/path<script>alert('xss')</script>">
+<link rel="stylesheet" href="https://nosuch-thing-example.com/path with spaces">
+<link rel="stylesheet" href="https://nosuch-thing-example.com/path&quot;with&quot;quotes">
+<link rel="stylesheet" href="https://nosuch-thing-example.com/path'with'single'quotes">
+<link rel="stylesheet" href="https://nosuch-thing-example.com/path<with>angle>brackets">
+<link rel="stylesheet" href="https://nosuch-thing-example.com/path&with&amps">
+<link rel="stylesheet" href="https://nosuch-thing-example.com/path<script>alert('xss')</script>">
 
 <img src="not-a-url">
 <img src="http://">
@@ -84,9 +84,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 <img src="tel:">
 
 <script src="https://example.com/path?param=&quot;value&quot;&other=<script>"></script>
-<script src="https://example.com/path#fragment<script>alert('xss')</script>"></script>
-<script src="https://example.com/path%3Cscript%3Ealert('xss')%3C/script%3E"></script>
-<script src="https://example.com/path&lt;script&gt;alert('xss')&lt;/script&gt;"></script>
+<script src="https://nosuch-thing-example.com/path#fragment<script>alert('xss')</script>"></script>
+<script src="https://nosuch-thing-example.com/path%3Cscript%3Ealert('xss')%3C/script%3E"></script>
+<script src="https://nosuch-thing-example.com/path&lt;script&gt;alert('xss')&lt;/script&gt;"></script>
 <script src="https://cirt.net/somethingnothere.js">https://cirt.net/somethingnothere.js</script>
 <script src="http://localhost:4567/test.js">http://localhost:4567/test.js</script>
 
@@ -141,6 +141,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 <a href="https://example.com/path,with,commas">https://example.com/path,with,commas</a><br>
 <a href="https://cirt.net/somethingnothere.js">https://cirt.net/somethingnothere.js</a><br>
 <a href="http://localhost:4567/test.js">http://localhost:4567/test.js</a><br>
+
+<img src="https://cirt.net/files/alienlogo_3.gif">
+<img src="https://cirt.net/files/alienlogo_3.gif">
+<img src="https://cirt.net/files/alienlogo_3.gif">
 
 </body>
 """)

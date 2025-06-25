@@ -57,10 +57,10 @@ node dangler.js --url <target-site> [options]
 
 - `--max-resources <num>`, `-R <num>`: Maximum number of remote resources to check (default: 1000). If this limit is reached, the scan will end early with a warning.
 
-### Concurrency Options (for future use)
+### Concurrency Options
 
-- `--threads-crawl <num>`, `-tc <num>`: Number of concurrent page crawlers to use (default: 5). (Not yet implemented)
-- `--threads-resource <num>`, `-tr <num>`: Number of concurrent resource checks to use (default: 10). (Not yet implemented)
+- `--threads-crawl <num>`, `-tc <num>`: Number of concurrent page crawlers to use (default: 5).
+- `--threads-resource <num>`, `-tr <num>`: Number of concurrent resource checks to use (default: 10).
 
 ### Example:
 ```bash

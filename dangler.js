@@ -22,7 +22,8 @@ const validFlags = new Set([
   '--manual', '-M',
   '--max-resources', '-R',
   '--threads-crawl', '-tc',
-  '--threads-resource', '-tr'
+  '--threads-resource', '-tr',
+  '--help', '-h'
 ]);
 
 const flags = {
@@ -40,10 +41,17 @@ const flags = {
   manual: false
 };
 
+const usageString = `\nUsage: node dangler.js --url <target> [options]\n\nRequired:\n  --url, -u <target>           Target website to crawl\n\nCommon options:\n  --output, -o <base>          Base name for output files (.json, .html). Default: dangler_output\n  --max-pages, -m <num>        Max pages to crawl. Default: 50\n  --proxy, -p <url>            Proxy URL (e.g. for Burp/ZAP)\n  --timeout, -t <ms>           Timeout for remote resource checks in ms. Default: 5000\n  --cookie, -C <cookie>        Set cookies for the browser session (can use multiple times)\n  --header, -H <header>        Set extra HTTP headers (can use multiple times)\n  --manual, -M                 Open browser for manual login/interaction\n  --debug, -d                  Enable debug output\n  --max-resources, -R <num>    Max number of remote resources to check (default: 1000)\n  --threads-crawl, -tc <num>   Number of concurrent page crawlers (default: 5)\n  --threads-resource, -tr <num>Number of concurrent resource checks (default: 10)\n  --help, -h                   Show this help message\n`;
+
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
+  if (arg === '--help' || arg === '-h') {
+    console.log(usageString);
+    process.exit(0);
+  }
   if (arg.startsWith('-') && !validFlags.has(arg)) {
     console.error(`Unknown flag: ${arg}`);
+    console.error(usageString);
     process.exit(1);
   }
   if (arg === '--url' || arg === '-u') {
@@ -104,7 +112,7 @@ for (let i = 0; i < args.length; i++) {
 }
 
 if (!flags.url) {
-  console.error('Usage: node dangler.js --url <target> [--debug] [--output -dir>] [--max-pages <num>] [--proxy <url>] [--timeout <ms>] [--cookie <cookieString>] [--header <headerString>] [--manual]');
+  console.error(usageString);
   process.exit(1);
 }
 
@@ -305,8 +313,24 @@ async function analyzeJS(url) {
   ).catch(() => false);
 }
 
+// At the top, define a function to check/increment the resource request count
+function incResourceRequestOrExit() {
+  totalRemoteResources++;
+  if (totalRemoteResources > flags.maxResources) {
+    console.warn(`Max resources checked (${flags.maxResources}) reached. Ending scan.`);
+    writeReportsAndExit();
+    process.exit();
+  }
+}
+
+// Patch getHostCheck to increment only on cache miss
 async function getHostCheck(hostname) {
   if (!hostname) return { resolves: false, tcpOk: false };
+  if (hostCheckCache.has(hostname)) {
+    if (flags.debug) console.log(`Host cache HIT: ${hostname}`);
+    return hostCheckCache.get(hostname);
+  }
+  incResourceRequestOrExit();
   if (flags.debug) console.log(`[DEBUG] Host cache MISS: ${hostname} -> checking...`);
   const resolves = await resolveHost(hostname);
   const tcpOk = await checkTCP(hostname);
@@ -316,6 +340,7 @@ async function getHostCheck(hostname) {
   return result;
 }
 
+// Patch getUrlCheck to increment only on cache miss
 async function getUrlCheck(url) {
   if (!url.startsWith('http')) return { httpOk: false, httpStatusCode: 0, loadsOtherJS: false };
 
@@ -326,14 +351,13 @@ async function getUrlCheck(url) {
     if (flags.debug) console.log(`URL cache HIT: ${cacheKey}`);
     return urlCheckCache.get(cacheKey);
   }
-
+  incResourceRequestOrExit();
   if (flags.debug) console.log(`URL cache MISS: ${cacheKey} -> checking...`);
   const httpRes = await checkHTTP(url);
   let loadsOtherJS = false;
   if (ext === 'js') {
     loadsOtherJS = await analyzeJS(url);
   }
-
   // Always provide httpOk and httpStatusCode, even if fetch failed
   const result = { httpOk: !!(httpRes && httpRes.ok), httpStatusCode: httpRes && typeof httpRes.status === 'number' ? httpRes.status : 0, loadsOtherJS };
   urlCheckCache.set(cacheKey, result);
@@ -438,19 +462,19 @@ function writeReportsAndExit() {
   // --- Count failure types and unique resources ---
   let dnsFailures = 0, connectFailures = 0, httpFailures = 0;
   const allCheckedResources = [];
-  const uniqueSeen = new Set();
+  const uniqueSet = new Set();
   results.forEach(page => {
     page.resources.forEach(r => {
       allCheckedResources.push(r.url);
       const stripped = stripQuery(r.url);
-      uniqueSeen.add(stripped);
+      uniqueSet.add(stripped);
       if (!r.resolves) dnsFailures++;
       else if (!r.tcpOk) connectFailures++;
       else if (!r.httpOk) httpFailures++;
     });
   });
-  const totalChecked = allCheckedResources.length;
-  const uniqueChecked = uniqueSeen.size;
+  const totalChecked = totalRemoteResources;
+  const uniqueChecked = uniqueSet.size;
 
   // --- Details Table ---
   html += `<h2>Details</h2>
@@ -524,19 +548,16 @@ function writeReportsAndExit() {
   }
 
   // Prepare data for subpages
-  const dnsRows = [], connectRows = [], httpRows = [], allRows = [], uniqueRows = [];
+  const dnsRows = [], connectRows = [], httpRows = [], allRows = [];
   results.forEach(page => {
     page.resources.forEach(r => {
       allRows.push([r.url, page.page]);
-      const stripped = stripQuery(r.url);
-      if (!uniqueRows.some(row => row[0] === stripped)) {
-        uniqueRows.push([stripped]);
-      }
       if (!r.resolves) dnsRows.push([r.url, page.page]);
       else if (!r.tcpOk) connectRows.push([r.url, page.page]);
       else if (!r.httpOk) httpRows.push([r.url, page.page, String(r.httpStatusCode)]);
     });
   });
+  const uniqueRows = Array.from(uniqueSet).map(url => [url]);
   writeSubpage('dns-failures.html', 'DNS Failures', dnsRows, ['Resource URL', 'Parent Page'], dnsRows.length, false, true);
   writeSubpage('connect-failures.html', 'Connect Failures', connectRows, ['Resource URL', 'Parent Page'], connectRows.length, false, true);
   writeSubpage('http-failures.html', 'HTTP Failures', httpRows, ['Resource URL', 'Parent Page', 'HTTP Status'], httpRows.length, (row, i) => i === 0 || i === 1);
@@ -686,9 +707,10 @@ process.on('SIGINT', () => {
     if (reqUrl.startsWith('blob:')) return;
     const reqOrigin = new URL(reqUrl).origin;
     const isInternal = reqOrigin === startOrigin;
-    if (!isInternal && !uniqueUrls.has(reqUrl)) {
+    const stripped = stripQuery(reqUrl);
+    if (!isInternal && !uniqueUrls.has(stripped)) {
       resources.push({ url: reqUrl, domain: new URL(reqUrl).hostname, resourceType: request.resourceType() });
-      uniqueUrls.add(reqUrl);
+      uniqueUrls.add(stripped);
     }
   });
 
@@ -718,11 +740,6 @@ process.on('SIGINT', () => {
     const visitedPages = new Set();
     allDiscoveredPages.add(flags.url);
 
-    // Handler-scoped variables
-    let results = [];
-    let totalRemoteResources = 0;
-    let potentialTakeovers = 0;
-
     // Crawl worker function
     async function crawlWorker() {
       while (queue.length > 0 && visitedPages.size < maxPages && totalRemoteResources < maxResources) {
@@ -734,9 +751,21 @@ process.on('SIGINT', () => {
 
         visitedPages.add(url);
 
-        // Reset for this crawl
-        resources = [];
-        uniqueUrls = new Set();
+        // Make these local to the worker
+        let resources = [];
+        let uniqueUrls = new Set();
+
+        scanPage.on('request', request => {
+          const reqUrl = request.url();
+          if (reqUrl.startsWith('blob:')) return;
+          const reqOrigin = new URL(reqUrl).origin;
+          const isInternal = reqOrigin === startOrigin;
+          const stripped = stripQuery(reqUrl);
+          if (!isInternal && !uniqueUrls.has(stripped)) {
+            resources.push({ url: reqUrl, domain: new URL(reqUrl).hostname, resourceType: request.resourceType() });
+            uniqueUrls.add(stripped);
+          }
+        });
 
         startSpinner('Crawling page...');
         try {
@@ -744,9 +773,11 @@ process.on('SIGINT', () => {
         } catch (error) {
           stopSpinner();
           if (flags.debug) console.log(`Failed to load ${url}: ${error.message}`);
+          scanPage.removeAllListeners('request');
           continue;
         }
         stopSpinner();
+        scanPage.removeAllListeners('request');
 
         const hrefs = await scanPage.$$eval('a[href]', as => as.map(a => a.href));
         hrefs.forEach(href => {
@@ -764,7 +795,6 @@ process.on('SIGINT', () => {
           await asyncPool(flags.threadsResource, resources, async (r) => {
             if (totalRemoteResources >= maxResources) return;
             try {
-              totalRemoteResources++;
               const hostCheck = await getHostCheck(r.domain);
               r.resolves = hostCheck.resolves;
               r.tcpOk = hostCheck.tcpOk;
