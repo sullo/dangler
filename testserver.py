@@ -28,6 +28,8 @@ Crawl-delay: 1
 <title>Broken Test Page</title>
 <script src="https://thisdoesntexistithink.com/somefile.js"></script>
 <script src="https://rvasec.com/somethingnothere.png"></script>
+<script src="https://github.com/sullo/nikto/somethingnothere.png"></script>
+
 <link rel="stylesheet" href="https://c0.wp.com/c/6.7.2/wp-includes/css/dist/block-library/style.min.css">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans%3A400%2C300%2C600%2C700%2C800&ver=6.7.2">
 
