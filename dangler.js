@@ -201,6 +201,7 @@ async function withTimeout(promise, ms) {
 
 async function resolveHost(hostname) {
   if (!hostname) return false;
+  if (flags.debug) console.log('[DEBUG] Resolving:', hostname);
   return withTimeout(new Promise((resolve) => {
     dns.lookup(hostname, (err) => {
       resolve(!err);
@@ -253,14 +254,10 @@ async function analyzeJS(url) {
 
 async function getHostCheck(hostname) {
   if (!hostname) return { resolves: false, tcpOk: false };
-  if (hostCheckCache.has(hostname)) {
-    if (flags.debug) console.log(`Host cache HIT: ${hostname}`);
-    return hostCheckCache.get(hostname);
-  }
-  if (flags.debug) console.log(`Host cache MISS: ${hostname} -> checking...`);
+  if (flags.debug) console.log(`[DEBUG] Host cache MISS: ${hostname} -> checking...`);
   const resolves = await resolveHost(hostname);
   const tcpOk = await checkTCP(hostname);
-
+  if (flags.debug) console.log(`[DEBUG] Host: ${hostname}, Resolves: ${resolves}, TCP: ${tcpOk}`);
   const result = { resolves, tcpOk };
   hostCheckCache.set(hostname, result);
   return result;
@@ -386,61 +383,119 @@ function writeReportsAndExit() {
   // --- Count failure types and unique resources ---
   let dnsFailures = 0, connectFailures = 0, httpFailures = 0;
   const allCheckedResources = [];
+  const uniqueSeen = new Set();
   results.forEach(page => {
     page.resources.forEach(r => {
       allCheckedResources.push(r.url);
+      const stripped = stripQuery(r.url);
+      uniqueSeen.add(stripped);
       if (!r.resolves) dnsFailures++;
       else if (!r.tcpOk) connectFailures++;
       else if (!r.httpOk) httpFailures++;
     });
   });
   const totalChecked = allCheckedResources.length;
-  const uniqueChecked = new Set(allCheckedResources).size;
+  const uniqueChecked = uniqueSeen.size;
 
   // --- Details Table ---
   html += `<h2>Details</h2>
-   <table class="halfwidth">
-   <tr><td class="label">DNS Failures</td><td class="value">${dnsFailures}</td></tr>
-   <tr><td class="label">Connect Failures</td><td class="value">${connectFailures}</td></tr>
-   <tr><td class="label">HTTP Failures</td><td class="value">${httpFailures}</td></tr>
-   <tr><td class="label">Total Resources Checked</td><td class="value">${totalChecked}</td></tr>
-   <tr><td class="label">Total Unique Resources</td><td class="value">${uniqueChecked}</td></tr>
+   <table class="halfwidth" style="width:100%;max-width:100vw;table-layout:fixed;">
+   <tr><td class="label">DNS Failures</td><td class="value"><a href="dns-failures.html">${dnsFailures}</a></td></tr>
+   <tr><td class="label">Connect Failures</td><td class="value"><a href="connect-failures.html">${connectFailures}</a></td></tr>
+   <tr><td class="label">HTTP Failures</td><td class="value"><a href="http-failures.html">${httpFailures}</a></td></tr>
+   <tr><td class="label">Total Resources Checked</td><td class="value"><a href="all-resources.html">${totalChecked}</a></td></tr>
+   <tr><td class="label">Total Unique Resources</td><td class="value"><a href="unique-resources.html">${uniqueChecked}</a></td></tr>
    </table>`;
 
-  // --- Failures Table ---
-  html += `<h2>Failures: Could Not Resolve or Retrieve</h2><table><tr><th>Resource URL</th><th>Parent Page</th><th>Reason</th></tr>`;
+  // --- Generate subpages ---
+  function writeSubpage(filename, title, rows, columns, total, makeLinks, makeLinksBothCols) {
+    // Sort rows by the first column (Resource URL)
+    rows = rows.slice().sort((a, b) => a[0].localeCompare(b[0]));
+    let subHtml = `<html><head><title>${title} - Dangler Report</title><meta name="referrer" content="no-referrer"><style>
+      body { font-family: sans-serif; margin: 40px; }
+      table { border-collapse: collapse; margin-bottom: 20px; width: 100%; max-width: 100vw; table-layout: fixed; }
+      .halfwidth { width: 100%; min-width: 350px; }
+      td.label { font-weight: bold; text-align: left; width: 40%; background: #f0f0f0; }
+      td.value { text-align: left; }
+      th, td { border: 1px solid #ddd; padding: 8px; word-break: break-all; }
+      th { background: #f0f0f0; }
+      a { color: #0645AD; }
+      small { color: #666; font-size: smaller; }
+    </style></head><body>
+    <h1>The Dangler</h1>
+    <hr>
+    <a href="index.html">&larr; Back to Summary</a>
+    <h2>${title}${typeof total === 'number' ? `: ${total}` : ''}</h2>`;
+    if (rows.length > 0) {
+      subHtml += `<table><tr>`;
+      for (const col of columns) subHtml += `<th>${escapeHtml(col)}</th>`;
+      subHtml += `</tr>`;
+      for (const row of rows) {
+        subHtml += `<tr>`;
+        for (let i = 0; i < row.length; ++i) {
+          let cell = row[i];
+          let isInternal = typeof cell === 'string' && cell.trim().endsWith('.html');
+          if (typeof makeLinks === 'function' && makeLinks(row, i)) {
+            if (isInternal) {
+              subHtml += `<td><a href="${sanitizeUrl(cell)}">${escapeHtml(cell)}</a></td>`;
+            } else {
+              subHtml += `<td><a href="${sanitizeUrl(cell)}" target="_blank">${escapeHtml(cell)}</a></td>`;
+            }
+          } else if (makeLinksBothCols) {
+            if (isInternal) {
+              subHtml += `<td><a href="${sanitizeUrl(cell)}">${escapeHtml(cell)}</a></td>`;
+            } else {
+              subHtml += `<td><a href="${sanitizeUrl(cell)}" target="_blank">${escapeHtml(cell)}</a></td>`;
+            }
+          } else if (makeLinks && i === 0) {
+            if (isInternal) {
+              subHtml += `<td><a href="${sanitizeUrl(cell)}">${escapeHtml(cell)}</a></td>`;
+            } else {
+              subHtml += `<td><a href="${sanitizeUrl(cell)}" target="_blank">${escapeHtml(cell)}</a></td>`;
+            }
+          } else {
+            subHtml += `<td>${escapeHtml(cell)}</td>`;
+          }
+        }
+        subHtml += `</tr>`;
+      }
+      subHtml += `</table>`;
+    } else {
+      subHtml += `<p>No data available for this section.</p>`;
+    }
+    subHtml += `</body></html>`;
+    const outPath = useOutputDir ? `${outputDir}/${filename}` : filename;
+    fs.writeFileSync(outPath, subHtml);
+  }
+
+  // Prepare data for subpages
+  const dnsRows = [], connectRows = [], httpRows = [], allRows = [], uniqueRows = [];
   results.forEach(page => {
     page.resources.forEach(r => {
-      if (!r.resolves || !r.tcpOk || !r.httpOk) {
-        let reason = [];
-        if (!r.resolves) reason.push("DNS failure");
-        else if (!r.tcpOk) reason.push("TCP failure");
-        else if (!r.httpOk) reason.push(`HTTP ${r.httpStatusCode}`);
-        html += `<tr>
-          <td><a href="${sanitizeUrl(r.url)}" target="_blank">${escapeHtml(r.url)}</a></td>
-          <td><a href="${sanitizeUrl(page.page)}" target="_blank">${escapeHtml(getPath(page.page))}</a></td>
-          <td>${escapeHtml(reason.join(", "))}</td>
-        </tr>`;
+      allRows.push([r.url, page.page]);
+      const stripped = stripQuery(r.url);
+      if (!uniqueRows.some(row => row[0] === stripped)) {
+        uniqueRows.push([stripped]);
       }
+      if (!r.resolves) dnsRows.push([r.url, page.page]);
+      else if (!r.tcpOk) connectRows.push([r.url, page.page]);
+      else if (!r.httpOk) httpRows.push([r.url, page.page, String(r.httpStatusCode)]);
     });
   });
-  html += `</table>`;
+  writeSubpage('dns-failures.html', 'DNS Failures', dnsRows, ['Resource URL', 'Parent Page'], dnsRows.length, false, true);
+  writeSubpage('connect-failures.html', 'Connect Failures', connectRows, ['Resource URL', 'Parent Page'], connectRows.length, false, true);
+  writeSubpage('http-failures.html', 'HTTP Failures', httpRows, ['Resource URL', 'Parent Page', 'HTTP Status'], httpRows.length, (row, i) => i === 0 || i === 1);
+  writeSubpage('all-resources.html', 'All Resources Checked', allRows, ['Resource URL', 'Parent Page'], allRows.length, false, true);
+  writeSubpage('unique-resources.html', 'Unique Resources Checked', uniqueRows, ['Resource URL'], uniqueRows.length, true);
+
+  // --- Failures Table ---
+  // (Removed as requested)
 
   // --- Unique Offsite Resources ---
-  html += `<h2>Unique Offsite Resources<br><small style="font-size: smaller;">(cache busters dropped)</small></h2>
-  <table><tr><th>Resource URL</th><th>Count</th></tr>`;
-  const unique = {};
-  results.forEach(page => {
-    page.resources.forEach(r => {
-      const key = stripQuery(r.url);
-      unique[key] = (unique[key] || 0) + 1;
-    });
-  });
-  const sortedUnique = Object.entries(unique).sort((a, b) => b[1] - a[1]);
-  sortedUnique.forEach(([key, count]) => {
-    html += `<tr><td><a href="${sanitizeUrl(key)}" target="_blank">${escapeHtml(key)}</a></td><td>${count}</td></tr>`;
-  });
-  html += `</table>`;
+  // (Removed as requested)
+
+  // Also update main report tables to 100% width and responsive
+  html = html.replace(/<table class=\"halfwidth\"[^>]*>/g, '<table class="halfwidth" style="width:100%;max-width:100vw;table-layout:fixed;">');
 
   try {
     fs.writeFileSync(outputHtml, html);
@@ -550,13 +605,14 @@ process.on('SIGINT', () => {
   // Handler-scoped variables
   let resources = [];
   let uniqueUrls = new Set();
+  const startOrigin = (new URL(flags.url)).origin;
   scanPage.on('request', request => {
     const reqUrl = request.url();
     if (reqUrl.startsWith('blob:')) return;
-    const domain = new URL(reqUrl).hostname;
-    const isInternal = allowedDomains.some(d => domain.endsWith(d));
+    const reqOrigin = new URL(reqUrl).origin;
+    const isInternal = reqOrigin === startOrigin;
     if (!isInternal && !uniqueUrls.has(reqUrl)) {
-      resources.push({ url: reqUrl, domain, resourceType: request.resourceType() });
+      resources.push({ url: reqUrl, domain: new URL(reqUrl).hostname, resourceType: request.resourceType() });
       uniqueUrls.add(reqUrl);
     }
   });
@@ -711,3 +767,4 @@ function parseHeaders(headerStrings) {
   }
   return headers;
 }
+

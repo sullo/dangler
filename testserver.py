@@ -46,6 +46,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 <script src="https://example.com/path#fragment<script>alert('xss')</script>"></script>
 <script src="https://example.com/path%3Cscript%3Ealert('xss')%3C/script%3E"></script>
 <script src="https://example.com/path&lt;script&gt;alert('xss')&lt;/script&gt;"></script>
+<script src="https://cirt.net/somethingnothere.js">https://cirt.net/somethingnothere.js</script>
+<script src="http://localhost:4567/test.js">http://localhost:4567/test.js</script>
 
 <!-- Safe URLs for Comparison -->
 <script src="https://example.com/safe.js"></script>
@@ -96,6 +98,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 <a href="https://example.com/path_with_underscores">https://example.com/path_with_underscores</a><br>
 <a href="https://example.com/path.with.dots">https://example.com/path.with.dots</a><br>
 <a href="https://example.com/path,with,commas">https://example.com/path,with,commas</a><br>
+<a href="https://cirt.net/somethingnothere.js">https://cirt.net/somethingnothere.js</a><br>
+<a href="http://localhost:4567/test.js">http://localhost:4567/test.js</a><br>
 
 </body>
 """)
