@@ -52,6 +52,7 @@ node dangler.js --url <target-site> [options]
 - `--header` or `-H` — Set extra HTTP headers for all requests. Use multiple times for multiple headers, e.g. `-H "X-Test: foo" -H "User-Agent: custom"`.
 - `--manual` or `-M` — Open a non-headless browser window for manual login or interaction. Close the window to continue the scan with your session.
 - `--debug` or `-d` — Enable debug output for extra detail.
+- `--insecure` or `-k` — Ignore HTTPS certificate errors (useful for self-signed certificates or IP-based access).
 
 ### Resource and Performance Options
 
@@ -79,6 +80,7 @@ node dangler.js --url https://example.com \
   --header "X-Test: foo" \
   --header "User-Agent: custom UA" \
   --robots \
+  --insecure \
   --manual
 ```
 

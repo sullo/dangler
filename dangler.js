@@ -52,7 +52,8 @@ const validFlags = new Set([
   '--threads-resource', '-tr',
   '--help', '-h',
   '--robots', '-r',
-  '--pool-size', '-ps'
+  '--pool-size', '-ps',
+  '--insecure', '-k'
 ]);
 
 const flags = {
@@ -69,10 +70,11 @@ const flags = {
   headers: [],
   manual: false,
   robots: false,
-  poolSize: 10
+  poolSize: 10,
+  insecure: false
 };
 
-const usageString = `\nUsage: node dangler.js --url <target> [options]\n\nRequired:\n  --url, -u <target>           Target website to crawl\n\nCommon options:\n  --output, -o <base>          Base name for output files (.json, .html). Default: dangler_output\n  --max-pages, -m <num>        Max pages to crawl. Default: 50\n  --proxy, -p <url>            Proxy URL (e.g. for Burp/ZAP)\n  --timeout, -t <ms>           Timeout for remote resource checks in ms. Default: 5000\n  --cookie, -C <cookie>        Set cookies for the browser session (can use multiple times)\n  --header, -H <header>        Set extra HTTP headers (can use multiple times)\n  --manual, -M                 Open browser for manual login/interaction\n  --debug, -d                  Enable debug output\n  --max-resources, -R <num>    Max number of remote resources to check (default: 1000)\n  --threads-crawl, -tc <num>   Number of concurrent page crawlers (default: 5)\n  --threads-resource, -tr <num>Number of concurrent resource checks (default: 20)\n  --pool-size, -ps <num>       Connection pool size per host (default: 10)\n  --robots, -r                 Honor robots.txt rules when crawling\n  --help, -h                   Show this help message\n`;
+const usageString = `\nUsage: node dangler.js --url <target> [options]\n\nRequired:\n  --url, -u <target>           Target website to crawl\n\nCommon options:\n  --output, -o <base>          Base name for output files (.json, .html). Default: dangler_output\n  --max-pages, -m <num>        Max pages to crawl. Default: 50\n  --proxy, -p <url>            Proxy URL (e.g. for Burp/ZAP)\n  --timeout, -t <ms>           Timeout for remote resource checks in ms. Default: 5000\n  --cookie, -C <cookie>        Set cookies for the browser session (can use multiple times)\n  --header, -H <header>        Set extra HTTP headers (can use multiple times)\n  --manual, -M                 Open browser for manual login/interaction\n  --debug, -d                  Enable debug output\n  --max-resources, -R <num>    Max number of remote resources to check (default: 1000)\n  --threads-crawl, -tc <num>   Number of concurrent page crawlers (default: 5)\n  --threads-resource, -tr <num>Number of concurrent resource checks (default: 20)\n  --pool-size, -ps <num>       Connection pool size per host (default: 10)\n  --robots, -r                 Honor robots.txt rules when crawling\n  --insecure, -k               Ignore HTTPS certificate errors\n  --help, -h                   Show this help message\n`;
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -148,6 +150,8 @@ for (let i = 0; i < args.length; i++) {
       process.exit(1);
     }
     i++;
+  } else if (arg === '--insecure' || arg === '-k') {
+    flags.insecure = true;
   }
 }
 
@@ -373,6 +377,10 @@ async function getRobotsRules(baseUrl, page) {
     contextOptions.ignoreHTTPSErrors = true;
     console.warn('[!] Proxy mode: ignoring certificate errors for browser traffic. Results may include insecure connections.');
   }
+  if (flags.insecure) {
+    contextOptions.ignoreHTTPSErrors = true;
+    console.warn('[!] Insecure mode: ignoring certificate errors. Results may include insecure connections.');
+  }
 
   let browser, context;
   if (flags.manual) {
@@ -555,6 +563,12 @@ async function getRobotsRules(baseUrl, page) {
           await new Promise(resolve => setTimeout(resolve, 2000));
         } catch (error) {
           stopSpinner();
+          if (error.message.includes('ERR_CERT_') || error.message.includes('CERT_')) {
+            console.error(`\n❌ SSL Certificate Error: ${error.message}`);
+            console.error(`💡 Try using the --insecure (-k) flag to ignore certificate errors:`);
+            console.error(`   node dangler.js --url ${flags.url} --insecure`);
+            process.exit(1);
+          }
           if (flags.debug) console.log(`Failed to load ${url}: ${error.message}`);
           scanPage.removeAllListeners('request');
           continue;
