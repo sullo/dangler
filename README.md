@@ -99,15 +99,43 @@ node dangler.js --url https://example.com \
 The Dangler includes intelligent takeover detection that focuses on domains where user-created content is actually possible:
 
 - **DNS failures** — Always flagged as potential takeovers
-- **TCP failures** — Always flagged as potential takeovers
+- **TCP failures** — Always flagged as potential takeovers  
 - **HTTP 4xx failures** — Only flagged as potential takeovers for domains in the takeover targets list
 - **HTTP 5xx failures** — Not flagged as takeovers (server errors)
 
-The takeover targets list is defined in `takeover-targets.json` and currently includes:
-- `github.com`
-- `githubpages.com`
+The takeover detection system uses fingerprint-based validation to identify vulnerable services. When a resource fails to load from a known takeover target domain, The Dangler performs additional checks:
 
-You can modify this file to add or remove domains based on your assessment needs.
+1. **DNS/Connection Failures**: If a domain doesn't resolve or can't be reached, it's flagged as a potential takeover opportunity
+2. **Fingerprint Validation**: For domains that do respond, the tool checks the response content against known service fingerprints to determine if the service is vulnerable
+
+### Takeover States
+
+The tool categorizes takeover opportunities with visual indicators:
+
+- 🚨 **DNS failure + takeover target** — High priority: Domain doesn't resolve and is in the takeover targets list
+- ⚠️ **DNS failure** — Medium priority: Domain doesn't resolve but not in takeover targets  
+- ❌ **Fingerprint found** — Confirmed vulnerable: Domain responds and matches a known vulnerable fingerprint
+
+### Takeover Targets Database
+
+The takeover targets and fingerprints are sourced from the comprehensive database maintained by the [can-i-take-over-xyz](https://github.com/EdOverflow/can-i-take-over-xyz/) project. This community-driven repository contains verified takeover targets for hundreds of services including:
+
+- Cloud platforms (AWS, Azure, Google Cloud)
+- CDN services (Cloudflare, Fastly, Akamai)
+- Hosting providers (GitHub Pages, Heroku, Netlify)
+- SaaS platforms (Shopify, Zendesk, Intercom)
+- And many more...
+
+The `fingerprints.json` file contains the latest verified takeover targets with their associated fingerprints, CNAME patterns, and vulnerability status. This database is automatically updated and maintained by the can-i-take-over-xyz community.
+
+### Customizing Takeover Detection
+
+You can modify the `fingerprints.json` file to:
+- Add new takeover targets for your specific assessment needs
+- Remove targets that are no longer relevant
+- Update fingerprints for services that have changed their error responses
+
+The file format follows the structure used by the can-i-take-over-xyz project, ensuring compatibility and easy updates.
 
 ## Robots.txt Support
 

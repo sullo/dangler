@@ -11,17 +11,24 @@ const fs = require('fs');
 // Load takeover targets
 let takeoverTargets = [];
 try {
-  const takeoverData = fs.readFileSync('takeover-targets.json', 'utf8');
+  const takeoverData = fs.readFileSync('fingerprints.json', 'utf8');
   const takeoverConfig = JSON.parse(takeoverData);
-  takeoverTargets = takeoverConfig.domains || [];
+  takeoverTargets = takeoverConfig.filter(entry => entry.vulnerable === true).map(entry => ({
+    cname: entry.cname,
+    fingerprint: entry.fingerprint,
+    nxdomain: entry.nxdomain,
+    service: entry.service
+  }));
 } catch (error) {
-  console.warn('Warning: Could not load takeover-targets.json, using empty list');
+  console.warn('Warning: Could not load fingerprints.json, using empty list');
   takeoverTargets = [];
 }
 
 // Helper function to check if a domain is a potential takeover target
 function isTakeoverTarget(domain) {
-  return takeoverTargets.some(target => domain === target || domain.endsWith('.' + target));
+  return takeoverTargets.some(target => 
+    target.cname.some(cname => domain === cname || domain.endsWith('.' + cname))
+  );
 }
 
 // Robots.txt parsing and checking
@@ -260,6 +267,34 @@ const results = [];
 const hostCheckCache = new Map();
 const urlCheckCache = new Map();
 
+// Host match cache for takeover detection
+const hostMatchCache = new Map();
+
+// Helper function to check if a domain is a potential takeover target
+function checkHostInFingerprints(hostname) {
+  if (hostMatchCache.has(hostname)) {
+    return hostMatchCache.get(hostname);
+  }
+  
+  const match = takeoverTargets.find(target => 
+    target.cname.some(cname => {
+      // Create regex that matches end of hostname
+      const regex = new RegExp(`\\.${cname.replace(/\./g, '\\.')}$`);
+      return hostname === cname || regex.test(hostname);
+    })
+  );
+  
+  const result = match ? { 
+    matches: true, 
+    fingerprint: match.fingerprint, 
+    service: match.service,
+    nxdomain: match.nxdomain 
+  } : { matches: false };
+  
+  hostMatchCache.set(hostname, result);
+  return result;
+}
+
 let totalRemoteResources = 0;
 let potentialTakeovers = 0;
 const allDiscoveredPages = new Set();
@@ -403,12 +438,27 @@ async function checkTCP(hostname) {
 
 async function checkHTTP(url) {
   if (!url.startsWith('http')) return { ok: false, status: 0 };
+  
+  const hostname = new URL(url).hostname;
+  const hostMatch = checkHostInFingerprints(hostname);
+  
   try {
-    return await withTimeout(fetch(url, { method: 'HEAD' })
-      .then(res => ({ ok: res.status < 400, status: res.status })), REMOTE_TIMEOUT_MS);
+    const response = await withTimeout(fetch(url), REMOTE_TIMEOUT_MS);
+    const result = { ok: response.status < 400, status: response.status };
+    
+    // If it's a takeover target, check fingerprint
+    if (hostMatch.matches && !hostMatch.nxdomain) {
+      const content = await response.text();
+      const fingerprintFound = content.includes(hostMatch.fingerprint);
+      
+      result.takeoverVulnerable = fingerprintFound;
+      result.takeoverService = hostMatch.service;
+      result.takeoverReason = fingerprintFound ? 'Fingerprint found' : 'Fingerprint not found';
+    }
+    
+    return result;
   } catch (err) {
     if (flags.debug) console.log('[DEBUG] checkHTTP error for', url, ':', err && err.message);
-    // If fetch fails (e.g., connection refused), treat as not ok
     return { ok: false, status: 0, error: err };
   }
 }
@@ -473,7 +523,14 @@ async function getUrlCheck(url) {
     loadsOtherJS = await analyzeJS(url);
   }
   // Always provide httpOk and httpStatusCode, even if fetch failed
-  const result = { httpOk: !!(httpRes && httpRes.ok), httpStatusCode: httpRes && typeof httpRes.status === 'number' ? httpRes.status : 0, loadsOtherJS };
+  const result = { 
+    httpOk: !!(httpRes && httpRes.ok), 
+    httpStatusCode: httpRes && typeof httpRes.status === 'number' ? httpRes.status : 0, 
+    loadsOtherJS,
+    takeoverVulnerable: httpRes && httpRes.takeoverVulnerable ? httpRes.takeoverVulnerable : false,
+    takeoverService: httpRes && httpRes.takeoverService ? httpRes.takeoverService : null,
+    takeoverReason: httpRes && httpRes.takeoverReason ? httpRes.takeoverReason : null
+  };
   urlCheckCache.set(cacheKey, result);
   return result;
 }
@@ -963,7 +1020,36 @@ process.on('SIGINT', () => {
               r.httpStatusCode = urlCheck.httpStatusCode;
               r.loadsOtherJS = r.resourceType === 'script' ? urlCheck.loadsOtherJS : false;
 
-              r.possibleTakeover = !r.resolves || !r.tcpOk || (!r.httpOk && isTakeoverTarget(r.domain));
+              // Takeover detection logic
+              const hostMatch = checkHostInFingerprints(r.domain);
+              
+              if (!r.resolves) {
+                // Host doesn't resolve
+                if (hostMatch.matches) {
+                  // 🚨 DANGER: Host doesn't resolve + in fingerprints
+                  r.takeoverVulnerable = true;
+                  r.takeoverService = hostMatch.service;
+                  r.takeoverReason = 'DNS failure + takeover target';
+                  r.takeoverIcon = '🚨';
+                } else {
+                  // ⚠️ WARNING: Host doesn't resolve but not in fingerprints
+                  r.takeoverVulnerable = false;
+                  r.takeoverReason = 'DNS failure';
+                  r.takeoverIcon = '⚠️';
+                }
+              } else {
+                // Host resolves - check if fingerprint validation was done
+                if (hostMatch.matches && r.httpOk && urlCheck.takeoverVulnerable) {
+                  // ❌ VULNERABLE: Host resolves + fingerprint matches
+                  r.takeoverVulnerable = true;
+                  r.takeoverService = urlCheck.takeoverService;
+                  r.takeoverReason = urlCheck.takeoverReason;
+                  r.takeoverIcon = '❌';
+                }
+                // No icon for resolved hosts that aren't vulnerable
+              }
+
+              r.possibleTakeover = r.takeoverVulnerable;
               if (r.possibleTakeover) potentialTakeovers++;
             } catch (resourceError) {
               if (flags.debug) console.log(`Error validating resource ${r.url}: ${resourceError.message}`);
@@ -973,8 +1059,8 @@ process.on('SIGINT', () => {
               r.httpOk = false;
               r.httpStatusCode = 0;
               r.loadsOtherJS = false;
-              r.possibleTakeover = !r.resolves || !r.tcpOk || (!r.httpOk && isTakeoverTarget(r.domain));
-              if (r.possibleTakeover) potentialTakeovers++;
+              r.takeoverVulnerable = false;
+              r.possibleTakeover = false;
             }
           });
         } catch (error) {
