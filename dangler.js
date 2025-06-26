@@ -557,15 +557,10 @@ async function getRobotsRules(baseUrl, page) {
           }
         });
 
+        startSpinner('Crawling page...');
         try {
-          await scanPage.goto(url, { 
-            waitUntil: 'domcontentloaded',
-            timeout: 15000
-          });
-          
-          // Small delay to ensure all resources are loaded
+          await scanPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
           await new Promise(resolve => setTimeout(resolve, 2000));
-          
         } catch (error) {
           stopSpinner();
           if (flags.debug) console.log(`Failed to load ${url}: ${error.message}`);
