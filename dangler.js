@@ -151,7 +151,7 @@ const flags = {
   maxPages: 50,
   maxResources: 1000,
   threadsCrawl: 5,
-  threadsResource: 10,
+  threadsResource: 20,
   proxy: '',
   timeout: 5000,
   cookies: [],
@@ -160,7 +160,7 @@ const flags = {
   robots: false
 };
 
-const usageString = `\nUsage: node dangler.js --url <target> [options]\n\nRequired:\n  --url, -u <target>           Target website to crawl\n\nCommon options:\n  --output, -o <base>          Base name for output files (.json, .html). Default: dangler_output\n  --max-pages, -m <num>        Max pages to crawl. Default: 50\n  --proxy, -p <url>            Proxy URL (e.g. for Burp/ZAP)\n  --timeout, -t <ms>           Timeout for remote resource checks in ms. Default: 5000\n  --cookie, -C <cookie>        Set cookies for the browser session (can use multiple times)\n  --header, -H <header>        Set extra HTTP headers (can use multiple times)\n  --manual, -M                 Open browser for manual login/interaction\n  --debug, -d                  Enable debug output\n  --max-resources, -R <num>    Max number of remote resources to check (default: 1000)\n  --threads-crawl, -tc <num>   Number of concurrent page crawlers (default: 5)\n  --threads-resource, -tr <num>Number of concurrent resource checks (default: 10)\n  --robots, -r                 Honor robots.txt rules when crawling\n  --help, -h                   Show this help message\n`;
+const usageString = `\nUsage: node dangler.js --url <target> [options]\n\nRequired:\n  --url, -u <target>           Target website to crawl\n\nCommon options:\n  --output, -o <base>          Base name for output files (.json, .html). Default: dangler_output\n  --max-pages, -m <num>        Max pages to crawl. Default: 50\n  --proxy, -p <url>            Proxy URL (e.g. for Burp/ZAP)\n  --timeout, -t <ms>           Timeout for remote resource checks in ms. Default: 5000\n  --cookie, -C <cookie>        Set cookies for the browser session (can use multiple times)\n  --header, -H <header>        Set extra HTTP headers (can use multiple times)\n  --manual, -M                 Open browser for manual login/interaction\n  --debug, -d                  Enable debug output\n  --max-resources, -R <num>    Max number of remote resources to check (default: 1000)\n  --threads-crawl, -tc <num>   Number of concurrent page crawlers (default: 5)\n  --threads-resource, -tr <num>Number of concurrent resource checks (default: 20)\n  --robots, -r                 Honor robots.txt rules when crawling\n  --help, -h                   Show this help message\n`;
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -923,9 +923,18 @@ process.on('SIGINT', () => {
   async function asyncPool(poolLimit, array, iteratorFn) {
     const ret = [];
     const executing = new Set();
+    let completed = 0;
+    const total = array.length;
     
     for (const item of array) {
-      const p = Promise.resolve().then(() => iteratorFn(item));
+      const p = Promise.resolve().then(async () => {
+        const result = await iteratorFn(item);
+        completed++;
+        if (flags.debug && total > 10) {
+          console.log(`[DEBUG] Resource validation progress: ${completed}/${total} (${Math.round(completed/total*100)}%)`);
+        }
+        return result;
+      });
       ret.push(p);
       executing.add(p);
       
@@ -1000,7 +1009,14 @@ process.on('SIGINT', () => {
 
         startSpinner('Crawling page...');
         try {
-          await scanPage.goto(url, { waitUntil: 'networkidle' });
+          await scanPage.goto(url, { 
+            waitUntil: 'domcontentloaded',
+            timeout: 15000
+          });
+          
+          // Small delay to ensure all resources are loaded
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          
         } catch (error) {
           stopSpinner();
           if (flags.debug) console.log(`Failed to load ${url}: ${error.message}`);
@@ -1014,6 +1030,14 @@ process.on('SIGINT', () => {
           console.log(`[DEBUG] Found ${resources.length} external resources on ${url}`);
           if (resources.length > 0) {
             console.log(`[DEBUG] Sample resources:`, resources.slice(0, 3).map(r => r.url));
+          } else {
+            console.log(`[DEBUG] No external resources found - checking if page loaded properly`);
+            try {
+              const title = await scanPage.title();
+              console.log(`[DEBUG] Page title: "${title}"`);
+            } catch (e) {
+              console.log(`[DEBUG] Could not get page title: ${e.message}`);
+            }
           }
         }
 
@@ -1037,70 +1061,81 @@ process.on('SIGINT', () => {
 
         startSpinner('Validating resources...');
         try {
-          await asyncPool(flags.threadsResource, resources, async (r) => {
-            if (totalRemoteResources >= maxResources) return;
-            try {
-              const hostCheck = await getHostCheck(r.domain);
-              r.resolves = hostCheck.resolves;
-              r.tcpOk = hostCheck.tcpOk;
+          if (resources.length > 0) {
+            if (flags.debug) {
+              console.log(`[DEBUG] Processing ${resources.length} resources with ${flags.threadsResource} concurrent threads`);
+            }
+            
+            // Process resources in parallel with progress reporting
+            await asyncPool(flags.threadsResource, resources, async (r) => {
+              if (totalRemoteResources >= maxResources) return;
+              try {
+                const hostCheck = await getHostCheck(r.domain);
+                r.resolves = hostCheck.resolves;
+                r.tcpOk = hostCheck.tcpOk;
 
-              let urlCheck = null;
-              // Early exit: skip HTTP check if DNS fails
-              if (!r.resolves) {
+                let urlCheck = null;
+                // Early exit: skip HTTP check if DNS fails
+                if (!r.resolves) {
+                  r.httpOk = false;
+                  r.httpStatusCode = 0;
+                  r.loadsOtherJS = false;
+                } else {
+                  // Only do HTTP check if DNS resolves
+                  urlCheck = await getUrlCheck(r.url);
+                  r.httpOk = urlCheck.httpOk;
+                  r.httpStatusCode = urlCheck.httpStatusCode;
+                  r.loadsOtherJS = r.resourceType === 'script' ? urlCheck.loadsOtherJS : false;
+                }
+
+                // Takeover detection logic
+                const hostMatch = checkHostInFingerprints(r.domain);
+                
+                if (!r.resolves) {
+                  // Host doesn't resolve
+                  if (hostMatch.matches) {
+                    // 🚨 DANGER: Host doesn't resolve + in fingerprints
+                    r.takeoverVulnerable = true;
+                    r.takeoverService = hostMatch.service;
+                    r.takeoverReason = 'DNS failure + takeover target';
+                    r.takeoverIcon = '🚨';
+                  } else {
+                    // ⚠️ WARNING: Host doesn't resolve but not in fingerprints
+                    r.takeoverVulnerable = false;
+                    r.takeoverReason = 'DNS failure';
+                    r.takeoverIcon = '⚠️';
+                  }
+                } else {
+                  // Host resolves - check if fingerprint validation was done
+                  if (hostMatch.matches && r.httpOk && urlCheck && urlCheck.takeoverVulnerable) {
+                    // ❌ VULNERABLE: Host resolves + fingerprint matches
+                    r.takeoverVulnerable = true;
+                    r.takeoverService = urlCheck.takeoverService;
+                    r.takeoverReason = urlCheck.takeoverReason;
+                    r.takeoverIcon = '❌';
+                  }
+                  // No icon for resolved hosts that aren't vulnerable
+                }
+
+                r.possibleTakeover = r.takeoverVulnerable;
+                if (r.possibleTakeover) potentialTakeovers++;
+              } catch (resourceError) {
+                if (flags.debug) console.log(`Error validating resource ${r.url}: ${resourceError.message}`);
+                // Set default values for failed resource
+                r.resolves = false;
+                r.tcpOk = false;
                 r.httpOk = false;
                 r.httpStatusCode = 0;
                 r.loadsOtherJS = false;
-              } else {
-                // Only do HTTP check if DNS resolves
-                urlCheck = await getUrlCheck(r.url);
-                r.httpOk = urlCheck.httpOk;
-                r.httpStatusCode = urlCheck.httpStatusCode;
-                r.loadsOtherJS = r.resourceType === 'script' ? urlCheck.loadsOtherJS : false;
+                r.takeoverVulnerable = false;
+                r.possibleTakeover = false;
               }
-
-              // Takeover detection logic
-              const hostMatch = checkHostInFingerprints(r.domain);
-              
-              if (!r.resolves) {
-                // Host doesn't resolve
-                if (hostMatch.matches) {
-                  // 🚨 DANGER: Host doesn't resolve + in fingerprints
-                  r.takeoverVulnerable = true;
-                  r.takeoverService = hostMatch.service;
-                  r.takeoverReason = 'DNS failure + takeover target';
-                  r.takeoverIcon = '🚨';
-                } else {
-                  // ⚠️ WARNING: Host doesn't resolve but not in fingerprints
-                  r.takeoverVulnerable = false;
-                  r.takeoverReason = 'DNS failure';
-                  r.takeoverIcon = '⚠️';
-                }
-              } else {
-                // Host resolves - check if fingerprint validation was done
-                if (hostMatch.matches && r.httpOk && urlCheck && urlCheck.takeoverVulnerable) {
-                  // ❌ VULNERABLE: Host resolves + fingerprint matches
-                  r.takeoverVulnerable = true;
-                  r.takeoverService = urlCheck.takeoverService;
-                  r.takeoverReason = urlCheck.takeoverReason;
-                  r.takeoverIcon = '❌';
-                }
-                // No icon for resolved hosts that aren't vulnerable
-              }
-
-              r.possibleTakeover = r.takeoverVulnerable;
-              if (r.possibleTakeover) potentialTakeovers++;
-            } catch (resourceError) {
-              if (flags.debug) console.log(`Error validating resource ${r.url}: ${resourceError.message}`);
-              // Set default values for failed resource
-              r.resolves = false;
-              r.tcpOk = false;
-              r.httpOk = false;
-              r.httpStatusCode = 0;
-              r.loadsOtherJS = false;
-              r.takeoverVulnerable = false;
-              r.possibleTakeover = false;
+            });
+          } else {
+            if (flags.debug) {
+              console.log(`[DEBUG] No external resources found on ${url}`);
             }
-          });
+          }
         } catch (error) {
           stopSpinner();
           if (flags.debug) console.log(`Error validating resources for ${url}: ${error.message}`);
