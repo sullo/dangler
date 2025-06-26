@@ -270,6 +270,9 @@ const urlCheckCache = new Map();
 // Host match cache for takeover detection
 const hostMatchCache = new Map();
 
+// Fingerprint cache for optimization
+const fingerprintCache = new Map();
+
 // Helper function to check if a domain is a potential takeover target
 function checkHostInFingerprints(hostname) {
   if (hostMatchCache.has(hostname)) {
@@ -448,12 +451,31 @@ async function checkHTTP(url) {
     
     // If it's a takeover target, check fingerprint
     if (hostMatch.matches && !hostMatch.nxdomain) {
-      const content = await response.text();
-      const fingerprintFound = content.includes(hostMatch.fingerprint);
-      
-      result.takeoverVulnerable = fingerprintFound;
-      result.takeoverService = hostMatch.service;
-      result.takeoverReason = fingerprintFound ? 'Fingerprint found' : 'Fingerprint not found';
+      // Check fingerprint cache first
+      if (fingerprintCache.has(hostname)) {
+        const cachedResult = fingerprintCache.get(hostname);
+        result.takeoverVulnerable = cachedResult.takeoverVulnerable;
+        result.takeoverService = cachedResult.takeoverService;
+        result.takeoverReason = cachedResult.takeoverReason;
+        if (flags.debug) console.log(`[DEBUG] Fingerprint cache HIT for ${hostname}`);
+      } else {
+        // Perform fingerprint check and cache result
+        const content = await response.text();
+        const fingerprintFound = content.includes(hostMatch.fingerprint);
+        
+        result.takeoverVulnerable = fingerprintFound;
+        result.takeoverService = hostMatch.service;
+        result.takeoverReason = fingerprintFound ? 'Fingerprint found' : 'Fingerprint not found';
+        
+        // Cache the fingerprint result
+        fingerprintCache.set(hostname, {
+          takeoverVulnerable: result.takeoverVulnerable,
+          takeoverService: result.takeoverService,
+          takeoverReason: result.takeoverReason
+        });
+        
+        if (flags.debug) console.log(`[DEBUG] Fingerprint cache MISS for ${hostname} -> checked and cached`);
+      }
     }
     
     return result;
