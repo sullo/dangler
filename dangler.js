@@ -7,6 +7,9 @@ const { chromium } = require('playwright');
 const dns = require('dns');
 const net = require('net');
 const fs = require('fs');
+const http = require('http');
+const https = require('https');
+const { URL } = require('url');
 
 // Pre-compiled regex patterns for performance
 const REGEX_PATTERNS = {
@@ -32,6 +35,190 @@ const REGEX_PATTERNS = {
   DOT_ESCAPE: /\./g
 };
 
+// === CLI FLAG PARSER ===
+const args = process.argv.slice(2);
+const validFlags = new Set([
+  '--url', '-u',
+  '--debug', '-d',
+  '--output', '-o',
+  '--max-pages', '-m',
+  '--proxy', '-p',
+  '--timeout', '-t',
+  '--cookie', '-C',
+  '--header', '-H',
+  '--manual', '-M',
+  '--max-resources', '-R',
+  '--threads-crawl', '-tc',
+  '--threads-resource', '-tr',
+  '--help', '-h',
+  '--robots', '-r',
+  '--pool-size', '-ps'
+]);
+
+const flags = {
+  url: '',
+  debug: false,
+  output: 'dangler_output',
+  maxPages: 50,
+  maxResources: 1000,
+  threadsCrawl: 5,
+  threadsResource: 20,
+  proxy: '',
+  timeout: 5000,
+  cookies: [],
+  headers: [],
+  manual: false,
+  robots: false,
+  poolSize: 10
+};
+
+const usageString = `\nUsage: node dangler.js --url <target> [options]\n\nRequired:\n  --url, -u <target>           Target website to crawl\n\nCommon options:\n  --output, -o <base>          Base name for output files (.json, .html). Default: dangler_output\n  --max-pages, -m <num>        Max pages to crawl. Default: 50\n  --proxy, -p <url>            Proxy URL (e.g. for Burp/ZAP)\n  --timeout, -t <ms>           Timeout for remote resource checks in ms. Default: 5000\n  --cookie, -C <cookie>        Set cookies for the browser session (can use multiple times)\n  --header, -H <header>        Set extra HTTP headers (can use multiple times)\n  --manual, -M                 Open browser for manual login/interaction\n  --debug, -d                  Enable debug output\n  --max-resources, -R <num>    Max number of remote resources to check (default: 1000)\n  --threads-crawl, -tc <num>   Number of concurrent page crawlers (default: 5)\n  --threads-resource, -tr <num>Number of concurrent resource checks (default: 20)\n  --pool-size, -ps <num>       Connection pool size per host (default: 10)\n  --robots, -r                 Honor robots.txt rules when crawling\n  --help, -h                   Show this help message\n`;
+
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--help' || arg === '-h') {
+    console.log(usageString);
+    process.exit(0);
+  }
+  if (arg.startsWith('-') && !validFlags.has(arg)) {
+    console.error(`Unknown flag: ${arg}`);
+    console.error(usageString);
+    process.exit(1);
+  }
+  if (arg === '--url' || arg === '-u') {
+    flags.url = args[i + 1];
+    i++;
+  } else if (arg === '--debug' || arg === '-d') {
+    flags.debug = true;
+  } else if (arg === '--output' || arg === '-o') {
+    flags.output = args[i + 1];
+    i++;
+  } else if (arg === '--max-pages' || arg === '-m') {
+    flags.maxPages = parseInt(args[i + 1], 10);
+    if (isNaN(flags.maxPages) || flags.maxPages < 1) {
+      console.error('--max-pages must be a positive integer.');
+      process.exit(1);
+    }
+    i++;
+  } else if (arg === '--max-resources' || arg === '-R') {
+    flags.maxResources = parseInt(args[i + 1], 10);
+    if (isNaN(flags.maxResources) || flags.maxResources < 1) {
+      console.error('--max-resources must be a positive integer.');
+      process.exit(1);
+    }
+    i++;
+  } else if (arg === '--threads-crawl' || arg === '-tc') {
+    flags.threadsCrawl = parseInt(args[i + 1], 10);
+    if (isNaN(flags.threadsCrawl) || flags.threadsCrawl < 1) {
+      console.error('--threads-crawl must be a positive integer.');
+      process.exit(1);
+    }
+    i++;
+  } else if (arg === '--threads-resource' || arg === '-tr') {
+    flags.threadsResource = parseInt(args[i + 1], 10);
+    if (isNaN(flags.threadsResource) || flags.threadsResource < 1) {
+      console.error('--threads-resource must be a positive integer.');
+      process.exit(1);
+    }
+    i++;
+  } else if (arg === '--proxy' || arg === '-p') {
+    flags.proxy = args[i + 1];
+    i++;
+  } else if (arg === '--timeout' || arg === '-t') {
+    flags.timeout = parseInt(args[i + 1], 10);
+    if (isNaN(flags.timeout) || flags.timeout < 1000) {
+      console.error('--timeout must be at least 1000ms (1 second).');
+      process.exit(1);
+    }
+    i++;
+  } else if (arg === '--cookie' || arg === '-C') {
+    flags.cookies.push(args[i + 1]);
+    i++;
+  } else if (arg === '--header' || arg === '-H') {
+    flags.headers.push(args[i + 1]);
+    i++;
+  } else if (arg === '--manual' || arg === '-M') {
+    flags.manual = true;
+  } else if (arg === '--robots' || arg === '-r') {
+    flags.robots = true;
+  } else if (arg === '--pool-size' || arg === '-ps') {
+    flags.poolSize = parseInt(args[i + 1], 10);
+    if (isNaN(flags.poolSize) || flags.poolSize < 1 || flags.poolSize > 100) {
+      console.error('--pool-size must be between 1 and 100.');
+      process.exit(1);
+    }
+    i++;
+  }
+}
+
+if (!flags.url) {
+  console.error(usageString);
+  process.exit(1);
+}
+
+const REMOTE_TIMEOUT_MS = flags.timeout;
+
+const outputBase = flags.output.replace(REGEX_PATTERNS.FILE_EXTENSION, '');
+
+// New logic for output directory and filenames
+const outputDir = outputBase;
+const useOutputDir = !outputBase.includes('/') && !outputBase.includes('\\');
+let outputJson, outputHtml;
+if (useOutputDir) {
+  outputJson = `${outputDir}/dangler-report.json`;
+  outputHtml = `${outputDir}/index.html`;
+} else {
+  outputJson = `${outputBase}.json`;
+  outputHtml = `${outputBase}.html`;
+}
+
+// State variables (must be declared before use)
+let totalRemoteResources = 0;
+let potentialTakeovers = 0;
+const allDiscoveredPages = new Set();
+const results = [];
+const hostCheckCache = new Map();
+const urlCheckCache = new Map();
+const hostMatchCache = new Map(); // Host match cache for takeover detection
+const fingerprintCache = new Map(); // Fingerprint cache for optimization
+
+// Console capture variables
+let consoleLogBuffer = '';
+const origConsoleLog = console.log;
+const origConsoleWarn = console.warn;
+const origConsoleError = console.error;
+console.log = function(...args) {
+  const msg = args.map(String).join(' ');
+  consoleLogBuffer += msg + '\n';
+  origConsoleLog.apply(console, args);
+};
+console.warn = function(...args) {
+  const msg = args.map(String).join(' ');
+  consoleLogBuffer += '[WARN] ' + msg + '\n';
+  origConsoleWarn.apply(console, args);
+};
+console.error = function(...args) {
+  const msg = args.map(String).join(' ');
+  consoleLogBuffer += '[ERROR] ' + msg + '\n';
+  origConsoleError.apply(console, args);
+};
+
+// Scan timing variables
+const scanStartDate = new Date();
+let scanStartLocal = formatLocalDate(scanStartDate);
+let scanStopLocal = '';
+let scanDuration = '';
+
+let startDomain;
+try {
+  startDomain = (new URL(flags.url)).hostname;
+} catch (e) {
+  console.error(`Invalid URL provided: ${flags.url}`);
+  process.exit(1);
+}
+const allowedDomains = [startDomain];
+const maxPages = flags.maxPages;
+
 // Load takeover targets
 let takeoverTargets = [];
 try {
@@ -53,6 +240,31 @@ function isTakeoverTarget(domain) {
   return takeoverTargets.some(target => 
     target.cname.some(cname => domain === cname || domain.endsWith('.' + cname))
   );
+}
+
+// Helper function to check if a domain is a potential takeover target and return details
+function checkHostInFingerprints(hostname) {
+  if (hostMatchCache.has(hostname)) {
+    return hostMatchCache.get(hostname);
+  }
+  
+  const match = takeoverTargets.find(target => 
+    target.cname.some(cname => {
+      // Create regex that matches end of hostname
+      const regex = new RegExp(`\\.${cname.replace(REGEX_PATTERNS.DOT_ESCAPE, '\\.')}$`);
+      return hostname === cname || regex.test(hostname);
+    })
+  );
+  
+  const result = match ? { 
+    matches: true, 
+    fingerprint: match.fingerprint, 
+    service: match.service,
+    nxdomain: match.nxdomain 
+  } : { matches: false };
+  
+  hostMatchCache.set(hostname, result);
+  return result;
 }
 
 // Robots.txt parsing and checking
@@ -149,216 +361,370 @@ async function getRobotsRules(baseUrl, page) {
   return rules;
 }
 
-// === CLI FLAG PARSER ===
-const args = process.argv.slice(2);
-const validFlags = new Set([
-  '--url', '-u',
-  '--debug', '-d',
-  '--output', '-o',
-  '--max-pages', '-m',
-  '--proxy', '-p',
-  '--timeout', '-t',
-  '--cookie', '-C',
-  '--header', '-H',
-  '--manual', '-M',
-  '--max-resources', '-R',
-  '--threads-crawl', '-tc',
-  '--threads-resource', '-tr',
-  '--help', '-h',
-  '--robots', '-r'
-]);
+// === MAIN ===
+(async () => {
+  console.log(`The Dangler: Starting audit on ${flags.url}`);
+  if (flags.debug) console.log('Debug mode ON');
 
-const flags = {
-  url: '',
-  debug: false,
-  output: 'dangler_output',
-  maxPages: 50,
-  maxResources: 1000,
-  threadsCrawl: 5,
-  threadsResource: 20,
-  proxy: '',
-  timeout: 5000,
-  cookies: [],
-  headers: [],
-  manual: false,
-  robots: false
-};
-
-const usageString = `\nUsage: node dangler.js --url <target> [options]\n\nRequired:\n  --url, -u <target>           Target website to crawl\n\nCommon options:\n  --output, -o <base>          Base name for output files (.json, .html). Default: dangler_output\n  --max-pages, -m <num>        Max pages to crawl. Default: 50\n  --proxy, -p <url>            Proxy URL (e.g. for Burp/ZAP)\n  --timeout, -t <ms>           Timeout for remote resource checks in ms. Default: 5000\n  --cookie, -C <cookie>        Set cookies for the browser session (can use multiple times)\n  --header, -H <header>        Set extra HTTP headers (can use multiple times)\n  --manual, -M                 Open browser for manual login/interaction\n  --debug, -d                  Enable debug output\n  --max-resources, -R <num>    Max number of remote resources to check (default: 1000)\n  --threads-crawl, -tc <num>   Number of concurrent page crawlers (default: 5)\n  --threads-resource, -tr <num>Number of concurrent resource checks (default: 20)\n  --robots, -r                 Honor robots.txt rules when crawling\n  --help, -h                   Show this help message\n`;
-
-for (let i = 0; i < args.length; i++) {
-  const arg = args[i];
-  if (arg === '--help' || arg === '-h') {
-    console.log(usageString);
-    process.exit(0);
+  // Prepare context options before browser creation
+  const contextOptions = { userAgent: DEFAULT_USER_AGENT };
+  if (flags.proxy) {
+    contextOptions.proxy = { server: flags.proxy };
+    contextOptions.ignoreHTTPSErrors = true;
+    console.warn('[!] Proxy mode: ignoring certificate errors for browser traffic. Results may include insecure connections.');
   }
-  if (arg.startsWith('-') && !validFlags.has(arg)) {
-    console.error(`Unknown flag: ${arg}`);
-    console.error(usageString);
-    process.exit(1);
+
+  let scanContext, scanPage;
+
+  if (flags.manual) {
+    console.log('[Manual Mode] You must come back to this terminal and press ENTER to continue after logging in.');
+    console.log('[Manual Mode] Press ENTER now to open the browser window.');
+    await new Promise(resolve => process.stdin.once('data', resolve));
+    const browserManual = await chromium.launch({ headless: false });
+    const contextManual = await browserManual.newContext(contextOptions);
+    const pageManual = await contextManual.newPage();
+    console.log('[Manual Mode] Please log in or interact with the browser window.');
+    console.log('[Manual Mode] When finished, press ENTER in this terminal to continue. Do NOT close the browser window yourself.');
+    await pageManual.goto(flags.url);
+    await new Promise(resolve => process.stdin.once('data', resolve));
+    // Extract cookies and storage from manual session
+    const cookies = await contextManual.cookies();
+    await browserManual.close();
+    // Re-launch browser in headless mode for the scan
+    const browser2 = await chromium.launch({ headless: true });
+    const context2 = await browser2.newContext(contextOptions);
+    const page2 = await context2.newPage();
+    await context2.addCookies(cookies);
+    scanContext = context2;
+    scanPage = page2;
+    console.log('[Manual Mode] Scan will continue with your session cookies.');
+  } else {
+    const browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext(contextOptions);
+    const page = await context.newPage();
+    scanContext = context;
+    scanPage = page;
   }
-  if (arg === '--url' || arg === '-u') {
-    flags.url = args[i + 1];
-    i++;
-  } else if (arg === '--debug' || arg === '-d') {
-    flags.debug = true;
-  } else if (arg === '--output' || arg === '-o') {
-    flags.output = args[i + 1];
-    i++;
-  } else if (arg === '--max-pages' || arg === '-m') {
-    flags.maxPages = parseInt(args[i + 1], 10);
-    if (isNaN(flags.maxPages) || flags.maxPages < 1) {
-      console.error('--max-pages must be a positive integer.');
-      process.exit(1);
+
+  // Add cookies if specified
+  if (flags.cookies.length > 0) {
+    const defaultDomain = startDomain;
+    let allCookies = [];
+    for (const cookieString of flags.cookies) {
+      allCookies = allCookies.concat(parseCookieString(cookieString, defaultDomain));
     }
-    i++;
-  } else if (arg === '--max-resources' || arg === '-R') {
-    flags.maxResources = parseInt(args[i + 1], 10);
-    if (isNaN(flags.maxResources) || flags.maxResources < 1) {
-      console.error('--max-resources must be a positive integer.');
-      process.exit(1);
-    }
-    i++;
-  } else if (arg === '--threads-crawl' || arg === '-tc') {
-    flags.threadsCrawl = parseInt(args[i + 1], 10);
-    if (isNaN(flags.threadsCrawl) || flags.threadsCrawl < 1) {
-      console.error('--threads-crawl must be a positive integer.');
-      process.exit(1);
-    }
-    i++;
-  } else if (arg === '--threads-resource' || arg === '-tr') {
-    flags.threadsResource = parseInt(args[i + 1], 10);
-    if (isNaN(flags.threadsResource) || flags.threadsResource < 1) {
-      console.error('--threads-resource must be a positive integer.');
-      process.exit(1);
-    }
-    i++;
-  } else if (arg === '--proxy' || arg === '-p') {
-    flags.proxy = args[i + 1];
-    i++;
-  } else if (arg === '--timeout' || arg === '-t') {
-    flags.timeout = parseInt(args[i + 1], 10);
-    if (isNaN(flags.timeout) || flags.timeout < 1000) {
-      console.error('--timeout must be at least 1000ms (1 second).');
-      process.exit(1);
-    }
-    i++;
-  } else if (arg === '--cookie' || arg === '-C') {
-    flags.cookies.push(args[i + 1]);
-    i++;
-  } else if (arg === '--header' || arg === '-H') {
-    flags.headers.push(args[i + 1]);
-    i++;
-  } else if (arg === '--manual' || arg === '-M') {
-    flags.manual = true;
-  } else if (arg === '--robots' || arg === '-r') {
-    flags.robots = true;
+    // Remove undefined attributes (Playwright will error if they're present)
+    allCookies = allCookies.map(c => {
+      const out = {};
+      for (const k in c) {
+        if (c[k] !== undefined) out[k] = c[k];
+      }
+      return out;
+    });
+    if (flags.debug) console.log('Setting cookies:', allCookies);
+    await scanContext.addCookies(allCookies);
   }
-}
 
-if (!flags.url) {
-  console.error(usageString);
-  process.exit(1);
-}
-
-const REMOTE_TIMEOUT_MS = flags.timeout;
-
-const outputBase = flags.output.replace(REGEX_PATTERNS.FILE_EXTENSION, '');
-
-// New logic for output directory and filenames
-const outputDir = outputBase;
-const useOutputDir = !outputBase.includes('/') && !outputBase.includes('\\');
-let outputJson, outputHtml;
-if (useOutputDir) {
-  outputJson = `${outputDir}/dangler-report.json`;
-  outputHtml = `${outputDir}/index.html`;
-} else {
-  outputJson = `${outputBase}.json`;
-  outputHtml = `${outputBase}.html`;
-}
-
-let startDomain;
-try {
-  startDomain = (new URL(flags.url)).hostname;
-} catch (e) {
-  console.error(`Invalid URL provided: ${flags.url}`);
-  process.exit(1);
-}
-const allowedDomains = [startDomain];
-const maxPages = flags.maxPages;
-
-const results = [];
-const hostCheckCache = new Map();
-const urlCheckCache = new Map();
-
-// Host match cache for takeover detection
-const hostMatchCache = new Map();
-
-// Fingerprint cache for optimization
-const fingerprintCache = new Map();
-
-// Helper function to check if a domain is a potential takeover target
-function checkHostInFingerprints(hostname) {
-  if (hostMatchCache.has(hostname)) {
-    return hostMatchCache.get(hostname);
+  // Add headers if specified, but only for target domain and subdomains
+  let extraHeaders = null;
+  if (flags.headers.length > 0) {
+    extraHeaders = parseHeaders(flags.headers);
+    if (flags.debug) console.log('Setting extra HTTP headers (scoped):', extraHeaders);
+    scanPage.route('**', (route, request) => {
+      try {
+        const reqUrl = new URL(request.url());
+        // Check if hostname matches target domain or subdomain
+        if (reqUrl.hostname === startDomain || reqUrl.hostname.endsWith('.' + startDomain)) {
+          // Merge headers
+          const merged = { ...request.headers(), ...extraHeaders };
+          route.continue({ headers: merged });
+        } else {
+          route.continue();
+        }
+      } catch (e) {
+        route.continue();
+      }
+    });
   }
-  
-  const match = takeoverTargets.find(target => 
-    target.cname.some(cname => {
-      // Create regex that matches end of hostname
-      const regex = new RegExp(`\\.${cname.replace(REGEX_PATTERNS.DOT_ESCAPE, '\\.')}$`);
-      return hostname === cname || regex.test(hostname);
-    })
-  );
-  
-  const result = match ? { 
-    matches: true, 
-    fingerprint: match.fingerprint, 
-    service: match.service,
-    nxdomain: match.nxdomain 
-  } : { matches: false };
-  
-  hostMatchCache.set(hostname, result);
-  return result;
-}
 
-let totalRemoteResources = 0;
-let potentialTakeovers = 0;
-const allDiscoveredPages = new Set();
+  const queue = [flags.url];
+  const visitedPages = new Set();
+  allDiscoveredPages.add(flags.url);
 
-// Add a variable to capture console output
-let consoleLogBuffer = '';
-const origConsoleLog = console.log;
-const origConsoleWarn = console.warn;
-const origConsoleError = console.error;
-console.log = function(...args) {
-  const msg = args.map(String).join(' ');
-  consoleLogBuffer += msg + '\n';
-  origConsoleLog.apply(console, args);
-};
-console.warn = function(...args) {
-  const msg = args.map(String).join(' ');
-  consoleLogBuffer += '[WARN] ' + msg + '\n';
-  origConsoleWarn.apply(console, args);
-};
-console.error = function(...args) {
-  const msg = args.map(String).join(' ');
-  consoleLogBuffer += '[ERROR] ' + msg + '\n';
-  origConsoleError.apply(console, args);
-};
+  // Handler-scoped variables
+  let resources = [];
+  let uniqueUrls = new Set();
+  const startOrigin = (new URL(flags.url)).origin;
+  scanPage.on('request', request => {
+    const reqUrl = request.url();
+    if (reqUrl.startsWith('blob:')) return;
+    const reqOrigin = new URL(reqUrl).origin;
+    const isInternal = reqOrigin === startOrigin;
+    const stripped = stripQuery(reqUrl);
+    if (!isInternal && !uniqueUrls.has(stripped)) {
+      resources.push({ url: reqUrl, domain: new URL(reqUrl).hostname, resourceType: request.resourceType() });
+      uniqueUrls.add(stripped);
+    }
+  });
 
-// Helper to format date as MM/DD/YYYY HH:MM:SS (24-hour)
-function formatLocalDate(date) {
-  const pad = n => n.toString().padStart(2, '0');
-  return `${pad(date.getMonth() + 1)}/${pad(date.getDate())}/${date.getFullYear()} ` +
-         `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-}
+  const maxResources = flags.maxResources;
 
-// Track scan start time (local)
-const scanStartDate = new Date();
-let scanStartLocal = formatLocalDate(scanStartDate);
-let scanStopLocal = '';
-let scanDuration = '';
+  // Add a simple async pool utility
+  async function asyncPool(poolLimit, array, iteratorFn) {
+    const ret = [];
+    const executing = new Set();
+    let completed = 0;
+    const total = array.length;
+    
+    for (const item of array) {
+      const p = Promise.resolve().then(async () => {
+        const result = await iteratorFn(item);
+        completed++;
+        if (flags.debug && total > 10) {
+          console.log(`[DEBUG] Resource validation progress: ${completed}/${total} (${Math.round(completed/total*100)}%)`);
+        }
+        return result;
+      });
+      ret.push(p);
+      executing.add(p);
+      
+      // Wait if we've reached the pool limit
+      if (executing.size >= poolLimit) {
+        await Promise.race(executing);
+      }
+      
+      // Clean up when promise completes
+      p.finally(() => executing.delete(p));
+    }
+    
+    return Promise.all(ret);
+  }
+
+  try {
+    // Load robots.txt rules if enabled (after browser setup)
+    let robotsRules = null;
+    if (flags.robots) {
+      const baseUrl = new URL(flags.url).origin;
+      robotsRules = await getRobotsRules(baseUrl, scanPage);
+      if (flags.debug) {
+        console.log(`[DEBUG] Robots.txt enabled for ${baseUrl}`);
+      }
+    }
+
+    // Shared state for all crawl workers
+    const queue = [flags.url];
+    const visitedPages = new Set();
+    allDiscoveredPages.add(flags.url);
+
+    // Crawl worker function
+    async function crawlWorker() {
+      while (queue.length > 0 && visitedPages.size < maxPages && totalRemoteResources < maxResources) {
+        const url = queue.shift();
+        if (!url || visitedPages.has(url)) continue;
+
+        // Check robots.txt if enabled
+        if (flags.robots && robotsRules) {
+          if (!isUrlAllowed(url, robotsRules)) {
+            if (flags.debug) console.log(`[DEBUG] Skipping ${url} (disallowed by robots.txt)`);
+            continue;
+          }
+        }
+
+        const pagesCrawled = visitedPages.size + 1;
+        console.log(`\n[#${pagesCrawled}/${maxPages}] Crawling: ${url}`);
+
+        visitedPages.add(url);
+
+        // Apply crawl delay if specified in robots.txt
+        if (flags.robots && robotsRules && robotsRules.crawlDelay) {
+          if (flags.debug) console.log(`[DEBUG] Crawl delay: ${robotsRules.crawlDelay}s`);
+          await new Promise(resolve => setTimeout(resolve, robotsRules.crawlDelay * 1000));
+        }
+
+        // Make these local to the worker
+        let resources = [];
+        let uniqueUrls = new Set();
+
+        scanPage.on('request', request => {
+          const reqUrl = request.url();
+          if (reqUrl.startsWith('blob:')) return;
+          const reqOrigin = new URL(reqUrl).origin;
+          const isInternal = reqOrigin === startOrigin;
+          const stripped = stripQuery(reqUrl);
+          if (!isInternal && !uniqueUrls.has(stripped)) {
+            resources.push({ url: reqUrl, domain: new URL(reqUrl).hostname, resourceType: request.resourceType() });
+            uniqueUrls.add(stripped);
+          }
+        });
+
+        try {
+          await scanPage.goto(url, { 
+            waitUntil: 'domcontentloaded',
+            timeout: 15000
+          });
+          
+          // Small delay to ensure all resources are loaded
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          
+        } catch (error) {
+          stopSpinner();
+          if (flags.debug) console.log(`Failed to load ${url}: ${error.message}`);
+          scanPage.removeAllListeners('request');
+          continue;
+        }
+        stopSpinner();
+        scanPage.removeAllListeners('request');
+
+        if (flags.debug) {
+          console.log(`[DEBUG] Found ${resources.length} external resources on ${url}`);
+          if (resources.length > 0) {
+            console.log(`[DEBUG] Sample resources:`, resources.slice(0, 3).map(r => r.url));
+          } else {
+            console.log(`[DEBUG] No external resources found - checking if page loaded properly`);
+            try {
+              const title = await scanPage.title();
+              console.log(`[DEBUG] Page title: "${title}"`);
+            } catch (e) {
+              console.log(`[DEBUG] Could not get page title: ${e.message}`);
+            }
+          }
+        }
+
+        const hrefs = await scanPage.$$eval('a[href]', as => as.map(a => a.href));
+        hrefs.forEach(href => {
+          try {
+            const u = new URL(href);
+            if (allowedDomains.some(d => u.hostname.endsWith(d)) && !visitedPages.has(u.href)) {
+              // Check robots.txt if enabled
+              if (flags.robots && robotsRules) {
+                if (!isUrlAllowed(u.href, robotsRules)) {
+                  if (flags.debug) console.log(`[DEBUG] Not queueing ${u.href} (disallowed by robots.txt)`);
+                  return;
+                }
+              }
+              queue.push(u.href);
+              allDiscoveredPages.add(u.href);
+            }
+          } catch {}
+        });
+
+        startSpinner('Validating resources...');
+        try {
+          if (resources.length > 0) {
+            if (flags.debug) {
+              console.log(`[DEBUG] Processing ${resources.length} resources with ${flags.threadsResource} concurrent threads`);
+            }
+            
+            // Process resources in parallel with progress reporting
+            await asyncPool(flags.threadsResource, resources, async (r) => {
+              if (totalRemoteResources >= maxResources) return;
+              try {
+                const hostCheck = await getHostCheck(r.domain);
+                r.resolves = hostCheck.resolves;
+                r.tcpOk = hostCheck.tcpOk;
+
+                let urlCheck = null;
+                // Early exit: skip HTTP check if DNS fails
+                if (!r.resolves) {
+                  r.httpOk = false;
+                  r.httpStatusCode = 0;
+                  r.loadsOtherJS = false;
+                } else {
+                  // Only do HTTP check if DNS resolves
+                  urlCheck = await getUrlCheck(r.url);
+                  r.httpOk = urlCheck.httpOk;
+                  r.httpStatusCode = urlCheck.httpStatusCode;
+                  r.loadsOtherJS = r.resourceType === 'script' ? urlCheck.loadsOtherJS : false;
+                }
+
+                // Takeover detection logic
+                const hostMatch = checkHostInFingerprints(r.domain);
+                
+                if (!r.resolves) {
+                  // Host doesn't resolve
+                  if (hostMatch.matches) {
+                    // 🚨 DANGER: Host doesn't resolve + in fingerprints
+                    r.takeoverVulnerable = true;
+                    r.takeoverService = hostMatch.service;
+                    r.takeoverReason = 'DNS failure + takeover target';
+                    r.takeoverIcon = '🚨';
+                  } else {
+                    // ⚠️ WARNING: Host doesn't resolve but not in fingerprints
+                    r.takeoverVulnerable = false;
+                    r.takeoverReason = 'DNS failure';
+                    r.takeoverIcon = '⚠️';
+                  }
+                } else {
+                  // Host resolves - check if fingerprint validation was done
+                  if (hostMatch.matches && r.httpOk && urlCheck && urlCheck.takeoverVulnerable) {
+                    // ❌ VULNERABLE: Host resolves + fingerprint matches
+                    r.takeoverVulnerable = true;
+                    r.takeoverService = urlCheck.takeoverService;
+                    r.takeoverReason = urlCheck.takeoverReason;
+                    r.takeoverIcon = '❌';
+                  }
+                  // No icon for resolved hosts that aren't vulnerable
+                }
+
+                r.possibleTakeover = r.takeoverVulnerable;
+                if (r.possibleTakeover) potentialTakeovers++;
+              } catch (resourceError) {
+                if (flags.debug) console.log(`Error validating resource ${r.url}: ${resourceError.message}`);
+                // Set default values for failed resource
+                r.resolves = false;
+                r.tcpOk = false;
+                r.httpOk = false;
+                r.httpStatusCode = 0;
+                r.loadsOtherJS = false;
+                r.takeoverVulnerable = false;
+                r.possibleTakeover = false;
+              }
+            });
+          } else {
+            if (flags.debug) {
+              console.log(`[DEBUG] No external resources found on ${url}`);
+            }
+          }
+        } catch (error) {
+          stopSpinner();
+          if (flags.debug) console.log(`Error validating resources for ${url}: ${error.message}`);
+          // Continue with the page even if resource validation fails
+        }
+        stopSpinner();
+
+        results.push({ page: url, resources });
+
+        if (visitedPages.size >= maxPages) {
+          console.warn(`Max pages crawled (${maxPages}) reached. Ending scan.`);
+          writeReportsAndExit();
+          return;
+        }
+        if (totalRemoteResources >= maxResources) {
+          console.warn(`Max resources checked (${maxResources}) reached. Ending scan.`);
+          writeReportsAndExit();
+          return;
+        }
+      }
+    }
+
+    // Launch crawl workers
+    await asyncPool(flags.threadsCrawl, Array(flags.threadsCrawl).fill(0), crawlWorker);
+
+  } catch (error) {
+    stopSpinner(); // Ensure spinner is stopped on any error
+    console.error(`Fatal error during crawling: ${error.message}`);
+    if (flags.debug) console.error(error.stack);
+  } finally {
+    // Always close browser resources
+    try {
+      await scanContext.browser().close();
+    } catch (error) {
+      console.error(`Error closing browser: ${error.message}`);
+    }
+  }
+
+  writeReportsAndExit();
+})();
 
 // === HELPERS ===
 
@@ -432,35 +798,71 @@ async function withTimeout(promise, ms) {
 }
 
 async function resolveHost(hostname) {
-  if (!hostname) return false;
-  if (flags.debug) console.log('[DEBUG] Resolving:', hostname);
-  return withTimeout(new Promise((resolve) => {
-    dns.lookup(hostname, (err) => {
-      resolve(!err);
-    });
-  }), REMOTE_TIMEOUT_MS).catch(() => false);
+  if (!hostname) {
+    if (flags.debug) console.log('[DEBUG] resolveHost: Empty hostname provided');
+    return false;
+  }
+  
+  if (flags.debug) console.log(`[DEBUG] resolveHost: Starting DNS lookup for "${hostname}"`);
+  
+  try {
+    const dnsTimeout = Math.max(REMOTE_TIMEOUT_MS, 10000);
+    if (flags.debug) console.log(`[DEBUG] resolveHost: Using timeout of ${dnsTimeout}ms for "${hostname}"`);
+    
+    const result = await withTimeout(new Promise((resolve) => {
+      if (flags.debug) console.log(`[DEBUG] resolveHost: Creating DNS lookup promise for "${hostname}"`);
+      
+      dns.lookup(hostname, { all: false }, (err, address, family) => {
+        if (err) {
+          if (flags.debug) console.log(`[DEBUG] resolveHost: DNS lookup failed for "${hostname}": ${err.code} - ${err.message}`);
+          resolve(false);
+        } else {
+          if (flags.debug) console.log(`[DEBUG] resolveHost: DNS lookup successful for "${hostname}": ${address} (family: ${family})`);
+          resolve(true);
+        }
+      });
+    }), dnsTimeout);
+    
+    if (flags.debug) console.log(`[DEBUG] resolveHost: Final result for "${hostname}": ${result}`);
+    return result;
+  } catch (error) {
+    if (flags.debug) console.log(`[DEBUG] resolveHost: DNS timeout/error for "${hostname}": ${error.message}`);
+    return false;
+  }
 }
 
 async function checkTCP(hostname) {
   if (!hostname) return false;
-  return withTimeout(new Promise((resolve) => {
-    const socket = net.connect(80, hostname);
-    
-    socket.on('connect', () => {
-      socket.destroy();
-      resolve(true);
-    });
-    
-    socket.on('error', () => {
-      socket.destroy();
-      resolve(false);
-    });
-    
-    socket.on('timeout', () => {
-      socket.destroy();
-      resolve(false);
-    });
-  }), REMOTE_TIMEOUT_MS).catch(() => false);
+  
+  try {
+    return await withTimeout(new Promise((resolve) => {
+      const socket = net.connect(80, hostname);
+      
+      socket.on('connect', () => {
+        if (flags.debug) console.log(`[DEBUG] TCP connection successful for ${hostname}`);
+        socket.destroy();
+        resolve(true);
+      });
+      
+      socket.on('error', (err) => {
+        if (flags.debug) console.log(`[DEBUG] TCP connection failed for ${hostname}:`, err.message);
+        socket.destroy();
+        resolve(false);
+      });
+      
+      socket.on('timeout', () => {
+        if (flags.debug) console.log(`[DEBUG] TCP connection timeout for ${hostname}`);
+        socket.destroy();
+        resolve(false);
+      });
+      
+      // Set socket timeout
+      socket.setTimeout(REMOTE_TIMEOUT_MS);
+    }), REMOTE_TIMEOUT_MS);
+  } catch (error) {
+    if (flags.debug) console.log(`[DEBUG] TCP check error for ${hostname}:`, error.message);
+    return false;
+  }
 }
 
 async function checkHTTP(url) {
@@ -470,7 +872,7 @@ async function checkHTTP(url) {
   const hostMatch = checkHostInFingerprints(hostname);
   
   try {
-    const response = await withTimeout(fetch(url), REMOTE_TIMEOUT_MS);
+    const response = await withTimeout(customFetch(url), REMOTE_TIMEOUT_MS);
     const result = { ok: response.status < 400, status: response.status };
     
     // Only check fingerprint if it's a takeover target and not nxdomain
@@ -513,7 +915,7 @@ async function checkHTTP(url) {
 async function analyzeJS(url) {
   if (!url.startsWith('http')) return false;
   return withTimeout(
-    fetch(url)
+    customFetch(url)
       .then(res => res.text())
       .then(js =>
         REGEX_PATTERNS.CREATE_ELEMENT_SCRIPT.test(js) ||
@@ -536,17 +938,30 @@ function incResourceRequestOrExit() {
 
 // Patch getHostCheck to increment only on cache miss
 async function getHostCheck(hostname) {
-  if (!hostname) return { resolves: false, tcpOk: false };
+  if (!hostname) {
+    if (flags.debug) console.log('[DEBUG] getHostCheck: Empty hostname provided');
+    return { resolves: false, tcpOk: false };
+  }
+  
   if (hostCheckCache.has(hostname)) {
-    if (flags.debug) console.log(`Host cache HIT: ${hostname}`);
+    if (flags.debug) console.log(`[DEBUG] getHostCheck: Cache HIT for "${hostname}"`);
     return hostCheckCache.get(hostname);
   }
+  
+  if (flags.debug) console.log(`[DEBUG] getHostCheck: Cache MISS for "${hostname}" -> starting checks...`);
   incResourceRequestOrExit();
-  if (flags.debug) console.log(`[DEBUG] Host cache MISS: ${hostname} -> checking...`);
+  
+  if (flags.debug) console.log(`[DEBUG] getHostCheck: Calling resolveHost for "${hostname}"`);
   const resolves = await resolveHost(hostname);
+  if (flags.debug) console.log(`[DEBUG] getHostCheck: resolveHost result for "${hostname}": ${resolves}`);
+  
+  if (flags.debug) console.log(`[DEBUG] getHostCheck: Calling checkTCP for "${hostname}"`);
   const tcpOk = await checkTCP(hostname);
-  if (flags.debug) console.log(`[DEBUG] Host: ${hostname}, Resolves: ${resolves}, TCP: ${tcpOk}`);
+  if (flags.debug) console.log(`[DEBUG] getHostCheck: checkTCP result for "${hostname}": ${tcpOk}`);
+  
   const result = { resolves, tcpOk };
+  if (flags.debug) console.log(`[DEBUG] getHostCheck: Final result for "${hostname}": resolves=${resolves}, tcpOk=${tcpOk}`);
+  
   hostCheckCache.set(hostname, result);
   return result;
 }
@@ -808,399 +1223,37 @@ function writeReportsAndExit() {
     console.error(`Failed to write HTML report: ${error.message}`);
   }
 
-  // At the end of writeReportsAndExit, write the console log page
-  function writeConsoleLogPage() {
-    let subHtml = `<html><head><title>Console Log - Dangler Report</title><meta name="referrer" content="no-referrer"><style>
-      body { font-family: sans-serif; margin: 40px; }
-      pre { background: #f8f8f8; border: 1px solid #ddd; padding: 16px; overflow-x: auto; }
-      a { color: #0645AD; }
-    </style></head><body>
-    <h1>The Dangler</h1>
-    <hr>
-    <a href="index.html">&larr; Back to Summary</a>
-    <h2>Console Log</h2>
-    <pre>${escapeHtml(consoleLogBuffer)}</pre>
-    </body></html>`;
-    const outPath = useOutputDir ? `${outputDir}/console-log.html` : 'console-log.html';
-    fs.writeFileSync(outPath, subHtml);
-  }
-
   // Call this at the end of writeReportsAndExit
   writeConsoleLogPage();
+
+  // Clean up connection pool
+  if (flags.debug) {
+    const poolStats = connectionPool.getStats();
+    console.log('[DEBUG] Connection pool stats:', JSON.stringify(poolStats, null, 2));
+  }
+  connectionPool.destroy();
 
   process.exit();
 }
 
-process.on('SIGINT', () => {
-  console.log('\nCTRL+C caught — writing reports...');
-  writeReportsAndExit();
-});
-
-// === MAIN ===
-(async () => {
-  console.log(`The Dangler: Starting audit on ${flags.url}`);
-  if (flags.debug) console.log('Debug mode ON');
-
-  // Prepare context options before browser creation
-  const contextOptions = { userAgent: DEFAULT_USER_AGENT };
-  if (flags.proxy) {
-    contextOptions.proxy = { server: flags.proxy };
-    contextOptions.ignoreHTTPSErrors = true;
-    console.warn('[!] Proxy mode: ignoring certificate errors for browser traffic. Results may include insecure connections.');
-  }
-
-  let scanContext, scanPage;
-
-  if (flags.manual) {
-    console.log('[Manual Mode] You must come back to this terminal and press ENTER to continue after logging in.');
-    console.log('[Manual Mode] Press ENTER now to open the browser window.');
-    await new Promise(resolve => process.stdin.once('data', resolve));
-    const browserManual = await chromium.launch({ headless: false });
-    const contextManual = await browserManual.newContext(contextOptions);
-    const pageManual = await contextManual.newPage();
-    console.log('[Manual Mode] Please log in or interact with the browser window.');
-    console.log('[Manual Mode] When finished, press ENTER in this terminal to continue. Do NOT close the browser window yourself.');
-    await pageManual.goto(flags.url);
-    await new Promise(resolve => process.stdin.once('data', resolve));
-    // Extract cookies and storage from manual session
-    const cookies = await contextManual.cookies();
-    await browserManual.close();
-    // Re-launch browser in headless mode for the scan
-    const browser2 = await chromium.launch({ headless: true });
-    const context2 = await browser2.newContext(contextOptions);
-    const page2 = await context2.newPage();
-    await context2.addCookies(cookies);
-    scanContext = context2;
-    scanPage = page2;
-    console.log('[Manual Mode] Scan will continue with your session cookies.');
-  } else {
-    const browser = await chromium.launch({ headless: true });
-    const context = await browser.newContext(contextOptions);
-    const page = await context.newPage();
-    scanContext = context;
-    scanPage = page;
-  }
-
-  // Add cookies if specified
-  if (flags.cookies.length > 0) {
-    const defaultDomain = startDomain;
-    let allCookies = [];
-    for (const cookieString of flags.cookies) {
-      allCookies = allCookies.concat(parseCookieString(cookieString, defaultDomain));
-    }
-    // Remove undefined attributes (Playwright will error if they're present)
-    allCookies = allCookies.map(c => {
-      const out = {};
-      for (const k in c) {
-        if (c[k] !== undefined) out[k] = c[k];
-      }
-      return out;
-    });
-    if (flags.debug) console.log('Setting cookies:', allCookies);
-    await scanContext.addCookies(allCookies);
-  }
-
-  // Add headers if specified, but only for target domain and subdomains
-  let extraHeaders = null;
-  if (flags.headers.length > 0) {
-    extraHeaders = parseHeaders(flags.headers);
-    if (flags.debug) console.log('Setting extra HTTP headers (scoped):', extraHeaders);
-    scanPage.route('**', (route, request) => {
-      try {
-        const reqUrl = new URL(request.url());
-        // Check if hostname matches target domain or subdomain
-        if (reqUrl.hostname === startDomain || reqUrl.hostname.endsWith('.' + startDomain)) {
-          // Merge headers
-          const merged = { ...request.headers(), ...extraHeaders };
-          route.continue({ headers: merged });
-        } else {
-          route.continue();
-        }
-      } catch (e) {
-        route.continue();
-      }
-    });
-  }
-
-  const queue = [flags.url];
-  const visitedPages = new Set();
-  allDiscoveredPages.add(flags.url);
-
-  // Handler-scoped variables
-  let resources = [];
-  let uniqueUrls = new Set();
-  const startOrigin = (new URL(flags.url)).origin;
-  scanPage.on('request', request => {
-    const reqUrl = request.url();
-    if (reqUrl.startsWith('blob:')) return;
-    const reqOrigin = new URL(reqUrl).origin;
-    const isInternal = reqOrigin === startOrigin;
-    const stripped = stripQuery(reqUrl);
-    if (!isInternal && !uniqueUrls.has(stripped)) {
-      resources.push({ url: reqUrl, domain: new URL(reqUrl).hostname, resourceType: request.resourceType() });
-      uniqueUrls.add(stripped);
-    }
-  });
-
-  const maxResources = flags.maxResources;
-
-  // Add a simple async pool utility
-  async function asyncPool(poolLimit, array, iteratorFn) {
-    const ret = [];
-    const executing = new Set();
-    let completed = 0;
-    const total = array.length;
-    
-    for (const item of array) {
-      const p = Promise.resolve().then(async () => {
-        const result = await iteratorFn(item);
-        completed++;
-        if (flags.debug && total > 10) {
-          console.log(`[DEBUG] Resource validation progress: ${completed}/${total} (${Math.round(completed/total*100)}%)`);
-        }
-        return result;
-      });
-      ret.push(p);
-      executing.add(p);
-      
-      // Wait if we've reached the pool limit
-      if (executing.size >= poolLimit) {
-        await Promise.race(executing);
-      }
-      
-      // Clean up when promise completes
-      p.finally(() => executing.delete(p));
-    }
-    
-    return Promise.all(ret);
-  }
-
-  try {
-    // Load robots.txt rules if enabled (after browser setup)
-    let robotsRules = null;
-    if (flags.robots) {
-      const baseUrl = new URL(flags.url).origin;
-      robotsRules = await getRobotsRules(baseUrl, scanPage);
-      if (flags.debug) {
-        console.log(`[DEBUG] Robots.txt enabled for ${baseUrl}`);
-      }
-    }
-
-    // Shared state for all crawl workers
-    const queue = [flags.url];
-    const visitedPages = new Set();
-    allDiscoveredPages.add(flags.url);
-
-    // Crawl worker function
-    async function crawlWorker() {
-      while (queue.length > 0 && visitedPages.size < maxPages && totalRemoteResources < maxResources) {
-        const url = queue.shift();
-        if (!url || visitedPages.has(url)) continue;
-
-        // Check robots.txt if enabled
-        if (flags.robots && robotsRules) {
-          if (!isUrlAllowed(url, robotsRules)) {
-            if (flags.debug) console.log(`[DEBUG] Skipping ${url} (disallowed by robots.txt)`);
-            continue;
-          }
-        }
-
-        const pagesCrawled = visitedPages.size + 1;
-        console.log(`\n[#${pagesCrawled}/${maxPages}] Crawling: ${url}`);
-
-        visitedPages.add(url);
-
-        // Apply crawl delay if specified in robots.txt
-        if (flags.robots && robotsRules && robotsRules.crawlDelay) {
-          if (flags.debug) console.log(`[DEBUG] Crawl delay: ${robotsRules.crawlDelay}s`);
-          await new Promise(resolve => setTimeout(resolve, robotsRules.crawlDelay * 1000));
-        }
-
-        // Make these local to the worker
-        let resources = [];
-        let uniqueUrls = new Set();
-
-        scanPage.on('request', request => {
-          const reqUrl = request.url();
-          if (reqUrl.startsWith('blob:')) return;
-          const reqOrigin = new URL(reqUrl).origin;
-          const isInternal = reqOrigin === startOrigin;
-          const stripped = stripQuery(reqUrl);
-          if (!isInternal && !uniqueUrls.has(stripped)) {
-            resources.push({ url: reqUrl, domain: new URL(reqUrl).hostname, resourceType: request.resourceType() });
-            uniqueUrls.add(stripped);
-          }
-        });
-
-        startSpinner('Crawling page...');
-        try {
-          await scanPage.goto(url, { 
-            waitUntil: 'domcontentloaded',
-            timeout: 15000
-          });
-          
-          // Small delay to ensure all resources are loaded
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          
-        } catch (error) {
-          stopSpinner();
-          if (flags.debug) console.log(`Failed to load ${url}: ${error.message}`);
-          scanPage.removeAllListeners('request');
-          continue;
-        }
-        stopSpinner();
-        scanPage.removeAllListeners('request');
-
-        if (flags.debug) {
-          console.log(`[DEBUG] Found ${resources.length} external resources on ${url}`);
-          if (resources.length > 0) {
-            console.log(`[DEBUG] Sample resources:`, resources.slice(0, 3).map(r => r.url));
-          } else {
-            console.log(`[DEBUG] No external resources found - checking if page loaded properly`);
-            try {
-              const title = await scanPage.title();
-              console.log(`[DEBUG] Page title: "${title}"`);
-            } catch (e) {
-              console.log(`[DEBUG] Could not get page title: ${e.message}`);
-            }
-          }
-        }
-
-        const hrefs = await scanPage.$$eval('a[href]', as => as.map(a => a.href));
-        hrefs.forEach(href => {
-          try {
-            const u = new URL(href);
-            if (allowedDomains.some(d => u.hostname.endsWith(d)) && !visitedPages.has(u.href)) {
-              // Check robots.txt if enabled
-              if (flags.robots && robotsRules) {
-                if (!isUrlAllowed(u.href, robotsRules)) {
-                  if (flags.debug) console.log(`[DEBUG] Not queueing ${u.href} (disallowed by robots.txt)`);
-                  return;
-                }
-              }
-              queue.push(u.href);
-              allDiscoveredPages.add(u.href);
-            }
-          } catch {}
-        });
-
-        startSpinner('Validating resources...');
-        try {
-          if (resources.length > 0) {
-            if (flags.debug) {
-              console.log(`[DEBUG] Processing ${resources.length} resources with ${flags.threadsResource} concurrent threads`);
-            }
-            
-            // Process resources in parallel with progress reporting
-            await asyncPool(flags.threadsResource, resources, async (r) => {
-              if (totalRemoteResources >= maxResources) return;
-              try {
-                const hostCheck = await getHostCheck(r.domain);
-                r.resolves = hostCheck.resolves;
-                r.tcpOk = hostCheck.tcpOk;
-
-                let urlCheck = null;
-                // Early exit: skip HTTP check if DNS fails
-                if (!r.resolves) {
-                  r.httpOk = false;
-                  r.httpStatusCode = 0;
-                  r.loadsOtherJS = false;
-                } else {
-                  // Only do HTTP check if DNS resolves
-                  urlCheck = await getUrlCheck(r.url);
-                  r.httpOk = urlCheck.httpOk;
-                  r.httpStatusCode = urlCheck.httpStatusCode;
-                  r.loadsOtherJS = r.resourceType === 'script' ? urlCheck.loadsOtherJS : false;
-                }
-
-                // Takeover detection logic
-                const hostMatch = checkHostInFingerprints(r.domain);
-                
-                if (!r.resolves) {
-                  // Host doesn't resolve
-                  if (hostMatch.matches) {
-                    // 🚨 DANGER: Host doesn't resolve + in fingerprints
-                    r.takeoverVulnerable = true;
-                    r.takeoverService = hostMatch.service;
-                    r.takeoverReason = 'DNS failure + takeover target';
-                    r.takeoverIcon = '🚨';
-                  } else {
-                    // ⚠️ WARNING: Host doesn't resolve but not in fingerprints
-                    r.takeoverVulnerable = false;
-                    r.takeoverReason = 'DNS failure';
-                    r.takeoverIcon = '⚠️';
-                  }
-                } else {
-                  // Host resolves - check if fingerprint validation was done
-                  if (hostMatch.matches && r.httpOk && urlCheck && urlCheck.takeoverVulnerable) {
-                    // ❌ VULNERABLE: Host resolves + fingerprint matches
-                    r.takeoverVulnerable = true;
-                    r.takeoverService = urlCheck.takeoverService;
-                    r.takeoverReason = urlCheck.takeoverReason;
-                    r.takeoverIcon = '❌';
-                  }
-                  // No icon for resolved hosts that aren't vulnerable
-                }
-
-                r.possibleTakeover = r.takeoverVulnerable;
-                if (r.possibleTakeover) potentialTakeovers++;
-              } catch (resourceError) {
-                if (flags.debug) console.log(`Error validating resource ${r.url}: ${resourceError.message}`);
-                // Set default values for failed resource
-                r.resolves = false;
-                r.tcpOk = false;
-                r.httpOk = false;
-                r.httpStatusCode = 0;
-                r.loadsOtherJS = false;
-                r.takeoverVulnerable = false;
-                r.possibleTakeover = false;
-              }
-            });
-          } else {
-            if (flags.debug) {
-              console.log(`[DEBUG] No external resources found on ${url}`);
-            }
-          }
-        } catch (error) {
-          stopSpinner();
-          if (flags.debug) console.log(`Error validating resources for ${url}: ${error.message}`);
-          // Continue with the page even if resource validation fails
-        }
-        stopSpinner();
-
-        results.push({ page: url, resources });
-
-        if (visitedPages.size >= maxPages) {
-          console.warn(`Max pages crawled (${maxPages}) reached. Ending scan.`);
-          writeReportsAndExit();
-          return;
-        }
-        if (totalRemoteResources >= maxResources) {
-          console.warn(`Max resources checked (${maxResources}) reached. Ending scan.`);
-          writeReportsAndExit();
-          return;
-        }
-      }
-    }
-
-    // Launch crawl workers
-    await asyncPool(flags.threadsCrawl, Array(flags.threadsCrawl).fill(0), crawlWorker);
-
-  } catch (error) {
-    stopSpinner(); // Ensure spinner is stopped on any error
-    console.error(`Fatal error during crawling: ${error.message}`);
-    if (flags.debug) console.error(error.stack);
-  } finally {
-    // Always close browser resources
-    try {
-      await scanContext.browser().close();
-    } catch (error) {
-      console.error(`Error closing browser: ${error.message}`);
-    }
-  }
-
-  writeReportsAndExit();
-})();
+// Write console log page
+function writeConsoleLogPage() {
+  let subHtml = `<html><head><title>Console Log - Dangler Report</title><meta name="referrer" content="no-referrer"><style>
+    body { font-family: monospace; margin: 40px; background: #1e1e1e; color: #d4d4d4; }
+    pre { background: #2d2d2d; padding: 20px; border-radius: 5px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; }
+    a { color: #569cd6; }
+    h1 { color: #dcdcaa; }
+  </style></head><body>
+  <h1>The Dangler</h1>
+  <hr>
+  <a href="index.html">&larr; Back to Summary</a>
+  <h2>Console Log</h2>
+  <pre>${escapeHtml(consoleLogBuffer)}</pre>
+  </body></html>`;
+  
+  const outPath = useOutputDir ? `${outputDir}/console-log.html` : 'console-log.html';
+  fs.writeFileSync(outPath, subHtml);
+}
 
 // Helper to parse cookie string like from a proxy
 function parseCookieString(cookieString, defaultDomain) {
@@ -1263,5 +1316,159 @@ function parseHeaders(headerStrings) {
     headers[name] = value;
   }
   return headers;
+}
+
+// Custom HTTP client with connection pooling and keep-alive
+async function customFetch(url, options = {}) {
+  return new Promise((resolve, reject) => {
+    try {
+      const parsedUrl = new URL(url);
+      const protocol = parsedUrl.protocol;
+      const hostname = parsedUrl.hostname;
+      const port = parsedUrl.port || (protocol === 'https:' ? 443 : 80);
+      const path = parsedUrl.pathname + parsedUrl.search;
+      
+      const agent = connectionPool.getAgent(protocol, hostname, port);
+      
+      const requestOptions = {
+        hostname,
+        port,
+        path,
+        method: options.method || 'GET',
+        headers: {
+          'User-Agent': DEFAULT_USER_AGENT,
+          'Accept': '*/*',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Connection': 'keep-alive',
+          'Cache-Control': 'no-cache',
+          ...options.headers
+        },
+        agent,
+        timeout: REMOTE_TIMEOUT_MS
+      };
+
+      const client = protocol === 'https:' ? https : http;
+      const req = client.request(requestOptions, (res) => {
+        let data = '';
+        
+        // Handle compression
+        let stream = res;
+        const contentEncoding = res.headers['content-encoding'];
+        if (contentEncoding === 'gzip') {
+          const zlib = require('zlib');
+          stream = res.pipe(zlib.createGunzip());
+        } else if (contentEncoding === 'deflate') {
+          const zlib = require('zlib');
+          stream = res.pipe(zlib.createInflate());
+        } else if (contentEncoding === 'br') {
+          const zlib = require('zlib');
+          stream = res.pipe(zlib.createBrotliDecompress());
+        }
+        
+        stream.on('data', (chunk) => {
+          data += chunk;
+        });
+        
+        stream.on('end', () => {
+          resolve({
+            ok: res.statusCode < 400,
+            status: res.statusCode,
+            statusText: res.statusMessage,
+            headers: res.headers,
+            text: () => Promise.resolve(data),
+            json: () => Promise.resolve(JSON.parse(data))
+          });
+        });
+        
+        stream.on('error', (err) => {
+          reject(err);
+        });
+      });
+
+      req.on('error', (err) => {
+        reject(err);
+      });
+
+      req.on('timeout', () => {
+        req.destroy();
+        reject(new Error('Request timeout'));
+      });
+
+      if (options.body) {
+        req.write(options.body);
+      }
+      
+      req.end();
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+// Connection pool for HTTP/HTTPS requests with keep-alive
+class ConnectionPool {
+  constructor(poolSize = 10) {
+    this.agents = new Map();
+    this.maxSockets = poolSize; // Max connections per host
+    this.maxFreeSockets = Math.max(2, Math.floor(poolSize / 2)); // Max idle connections per host
+    this.timeout = 60000; // Keep-alive timeout (60 seconds)
+  }
+
+  getAgent(protocol, hostname, port) {
+    const key = `${protocol}//${hostname}:${port}`;
+    
+    if (!this.agents.has(key)) {
+      const agentOptions = {
+        keepAlive: true,
+        keepAliveMsecs: 1000,
+        maxSockets: this.maxSockets,
+        maxFreeSockets: this.maxFreeSockets,
+        timeout: this.timeout,
+        scheduling: 'fifo'
+      };
+
+      const agent = protocol === 'https:' 
+        ? new https.Agent(agentOptions)
+        : new http.Agent(agentOptions);
+      
+      this.agents.set(key, agent);
+    }
+    
+    return this.agents.get(key);
+  }
+
+  destroy() {
+    for (const agent of this.agents.values()) {
+      agent.destroy();
+    }
+    this.agents.clear();
+  }
+
+  getStats() {
+    const stats = {
+      totalAgents: this.agents.size,
+      agents: {}
+    };
+    
+    for (const [key, agent] of this.agents.entries()) {
+      stats.agents[key] = {
+        requests: agent.requests,
+        sockets: agent.sockets,
+        freeSockets: agent.freeSockets
+      };
+    }
+    
+    return stats;
+  }
+}
+
+// Global connection pool instance (after flags are defined)
+const connectionPool = new ConnectionPool(flags.poolSize);
+
+// Helper to format date as MM/DD/YYYY HH:MM:SS (24-hour)
+function formatLocalDate(date) {
+  const pad = n => n.toString().padStart(2, '0');
+  return `${pad(date.getMonth() + 1)}/${pad(date.getDate())}/${date.getFullYear()} ` +
+         `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
