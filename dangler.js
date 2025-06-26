@@ -8,6 +8,30 @@ const dns = require('dns');
 const net = require('net');
 const fs = require('fs');
 
+// Pre-compiled regex patterns for performance
+const REGEX_PATTERNS = {
+  // File extension patterns
+  FILE_EXTENSION: /\.(json|html)$/i,
+  
+  // HTML encoding patterns
+  HTML_CHAR: /./g,
+  
+  // URL sanitization patterns
+  QUOTE_ESCAPE: /"/g,
+  SINGLE_QUOTE_ESCAPE: /'/g,
+  
+  // JavaScript analysis patterns
+  CREATE_ELEMENT_SCRIPT: /createElement\s*\(\s*['"]script['"]\s*\)/i,
+  JQUERY_GETSCRIPT: /\$\.getScript/i,
+  DYNAMIC_IMPORT: /import\s*\(/i,
+  
+  // Table class replacement pattern
+  TABLE_CLASS_REPLACE: /<table class=\"halfwidth\"[^>]*>/g,
+  
+  // Dot escaping pattern for CNAME matching
+  DOT_ESCAPE: /\./g
+};
+
 // Load takeover targets
 let takeoverTargets = [];
 try {
@@ -239,7 +263,7 @@ if (!flags.url) {
 
 const REMOTE_TIMEOUT_MS = flags.timeout;
 
-const outputBase = flags.output.replace(/\.(json|html)$/i, '');
+const outputBase = flags.output.replace(REGEX_PATTERNS.FILE_EXTENSION, '');
 
 // New logic for output directory and filenames
 const outputDir = outputBase;
@@ -282,7 +306,7 @@ function checkHostInFingerprints(hostname) {
   const match = takeoverTargets.find(target => 
     target.cname.some(cname => {
       // Create regex that matches end of hostname
-      const regex = new RegExp(`\\.${cname.replace(/\./g, '\\.')}$`);
+      const regex = new RegExp(`\\.${cname.replace(REGEX_PATTERNS.DOT_ESCAPE, '\\.')}$`);
       return hostname === cname || regex.test(hostname);
     })
   );
@@ -359,7 +383,7 @@ function getPath(url) {
 function escapeHtml(text) {
   if (typeof text !== 'string') return '';
   // Proper HTML encoding - whitelist approach: only allow safe characters
-  return text.replace(/./g, function(char) {
+  return text.replace(REGEX_PATTERNS.HTML_CHAR, function(char) {
     const code = char.charCodeAt(0);
     // Allow alphanumeric, space, and basic punctuation
     if ((code >= 48 && code <= 57) || // 0-9
@@ -388,7 +412,7 @@ function sanitizeUrl(url) {
     }
     
     // Escape quotes in the URL to prevent breaking href attribute
-    return parsed.toString().replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
+    return parsed.toString().replace(REGEX_PATTERNS.QUOTE_ESCAPE, '&quot;').replace(REGEX_PATTERNS.SINGLE_QUOTE_ESCAPE, '&#x27;');
   } catch {
     // If URL parsing fails, it's probably not a valid URL anyway
     return '#invalid';
@@ -449,7 +473,7 @@ async function checkHTTP(url) {
     const response = await withTimeout(fetch(url), REMOTE_TIMEOUT_MS);
     const result = { ok: response.status < 400, status: response.status };
     
-    // If it's a takeover target, check fingerprint
+    // Only check fingerprint if it's a takeover target and not nxdomain
     if (hostMatch.matches && !hostMatch.nxdomain) {
       // Check fingerprint cache first
       if (fingerprintCache.has(hostname)) {
@@ -477,6 +501,7 @@ async function checkHTTP(url) {
         if (flags.debug) console.log(`[DEBUG] Fingerprint cache MISS for ${hostname} -> checked and cached`);
       }
     }
+    // For non-takeover targets, no fingerprint checking is done - much faster!
     
     return result;
   } catch (err) {
@@ -491,9 +516,9 @@ async function analyzeJS(url) {
     fetch(url)
       .then(res => res.text())
       .then(js =>
-        /createElement\s*\(\s*['"]script['"]\s*\)/i.test(js) ||
-        /\$\.getScript/i.test(js) ||
-        /import\s*\(/i.test(js)
+        REGEX_PATTERNS.CREATE_ELEMENT_SCRIPT.test(js) ||
+        REGEX_PATTERNS.JQUERY_GETSCRIPT.test(js) ||
+        REGEX_PATTERNS.DYNAMIC_IMPORT.test(js)
       ),
     REMOTE_TIMEOUT_MS
   ).catch(() => false);
@@ -774,7 +799,7 @@ function writeReportsAndExit() {
   // (Removed as requested)
 
   // Also update main report tables to 100% width and responsive
-  html = html.replace(/<table class=\"halfwidth\"[^>]*>/g, '<table class="halfwidth" style="width:100%;max-width:100vw;table-layout:fixed;">');
+  html = html.replace(REGEX_PATTERNS.TABLE_CLASS_REPLACE, '<table class="halfwidth" style="width:100%;max-width:100vw;table-layout:fixed;">');
 
   try {
     fs.writeFileSync(outputHtml, html);
