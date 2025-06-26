@@ -39,7 +39,7 @@ async function fetchRobotsTxt(baseUrl, page) {
     const robotsUrl = new URL('/robots.txt', baseUrl).toString();
     const response = await page.goto(robotsUrl, { 
       waitUntil: 'domcontentloaded',
-      timeout: REMOTE_TIMEOUT_MS
+      timeout: 5000
     });
     
     if (response && response.ok()) {
@@ -1010,6 +1010,13 @@ process.on('SIGINT', () => {
         stopSpinner();
         scanPage.removeAllListeners('request');
 
+        if (flags.debug) {
+          console.log(`[DEBUG] Found ${resources.length} external resources on ${url}`);
+          if (resources.length > 0) {
+            console.log(`[DEBUG] Sample resources:`, resources.slice(0, 3).map(r => r.url));
+          }
+        }
+
         const hrefs = await scanPage.$$eval('a[href]', as => as.map(a => a.href));
         hrefs.forEach(href => {
           try {
@@ -1037,10 +1044,19 @@ process.on('SIGINT', () => {
               r.resolves = hostCheck.resolves;
               r.tcpOk = hostCheck.tcpOk;
 
-              const urlCheck = await getUrlCheck(r.url);
-              r.httpOk = urlCheck.httpOk;
-              r.httpStatusCode = urlCheck.httpStatusCode;
-              r.loadsOtherJS = r.resourceType === 'script' ? urlCheck.loadsOtherJS : false;
+              let urlCheck = null;
+              // Early exit: skip HTTP check if DNS fails
+              if (!r.resolves) {
+                r.httpOk = false;
+                r.httpStatusCode = 0;
+                r.loadsOtherJS = false;
+              } else {
+                // Only do HTTP check if DNS resolves
+                urlCheck = await getUrlCheck(r.url);
+                r.httpOk = urlCheck.httpOk;
+                r.httpStatusCode = urlCheck.httpStatusCode;
+                r.loadsOtherJS = r.resourceType === 'script' ? urlCheck.loadsOtherJS : false;
+              }
 
               // Takeover detection logic
               const hostMatch = checkHostInFingerprints(r.domain);
@@ -1061,7 +1077,7 @@ process.on('SIGINT', () => {
                 }
               } else {
                 // Host resolves - check if fingerprint validation was done
-                if (hostMatch.matches && r.httpOk && urlCheck.takeoverVulnerable) {
+                if (hostMatch.matches && r.httpOk && urlCheck && urlCheck.takeoverVulnerable) {
                   // ❌ VULNERABLE: Host resolves + fingerprint matches
                   r.takeoverVulnerable = true;
                   r.takeoverService = urlCheck.takeoverService;
