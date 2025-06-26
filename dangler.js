@@ -1023,8 +1023,66 @@ function writeReportsAndExit() {
       fs.mkdirSync(outputDir, { recursive: true });
     }
   }
-  fs.writeFileSync(outputJson, JSON.stringify(results, null, 2));
-  console.log(`\nJSON report saved to: ${outputJson}`);
+  
+  // Create a clean copy of results to avoid circular references
+  const cleanResults = results.map(page => ({
+    page: page.page,
+    resources: page.resources.map(r => {
+      // Create a clean resource object with only serializable properties
+      const cleanResource = {
+        url: r.url,
+        domain: r.domain,
+        resourceType: r.resourceType,
+        resolves: r.resolves,
+        tcpOk: r.tcpOk,
+        httpOk: r.httpOk,
+        httpStatusCode: r.httpStatusCode,
+        loadsOtherJS: r.loadsOtherJS
+      };
+      
+      // Only add takeover properties if they exist
+      if (r.takeoverVulnerable !== undefined) cleanResource.takeoverVulnerable = r.takeoverVulnerable;
+      if (r.takeoverService !== undefined) cleanResource.takeoverService = r.takeoverService;
+      if (r.takeoverReason !== undefined) cleanResource.takeoverReason = r.takeoverReason;
+      if (r.takeoverIcon !== undefined) cleanResource.takeoverIcon = r.takeoverIcon;
+      if (r.possibleTakeover !== undefined) cleanResource.possibleTakeover = r.possibleTakeover;
+      
+      return cleanResource;
+    })
+  }));
+  
+  // Custom replacer function to handle circular references
+  const seen = new WeakSet();
+  const replacer = (key, value) => {
+    if (typeof value === 'object' && value !== null) {
+      if (seen.has(value)) {
+        return '[Circular Reference]';
+      }
+      seen.add(value);
+    }
+    return value;
+  };
+  
+  try {
+    fs.writeFileSync(outputJson, JSON.stringify(cleanResults, replacer, 2));
+    console.log(`\nJSON report saved to: ${outputJson}`);
+  } catch (error) {
+    console.error(`Failed to write JSON report: ${error.message}`);
+    // Fallback: write a minimal report
+    const minimalResults = cleanResults.map(page => ({
+      page: page.page,
+      resources: page.resources.map(r => ({
+        url: r.url,
+        domain: r.domain,
+        resolves: r.resolves,
+        tcpOk: r.tcpOk,
+        httpOk: r.httpOk,
+        httpStatusCode: r.httpStatusCode
+      }))
+    }));
+    fs.writeFileSync(outputJson, JSON.stringify(minimalResults, null, 2));
+    console.log(`\nMinimal JSON report saved to: ${outputJson}`);
+  }
 
   const pagesCrawled = results.length;
   const totalPagesFound = allDiscoveredPages.size;
@@ -1175,24 +1233,24 @@ function writeReportsAndExit() {
     page.resources.forEach(r => {
       allRows.push([r.url, page.page]);
       if (!r.resolves) {
-        dnsRows.push([r.url, page.page]);
-        takeoverRows.push([r.url, page.page, 'DNS failure']);
+        dnsRows.push([r.url, extractHostname(r.url), page.page]);
+        takeoverRows.push([r.url, extractHostname(r.url), page.page, 'DNS failure']);
       }
-      else if (!r.tcpOk) connectRows.push([r.url, page.page]);
+      else if (!r.tcpOk) connectRows.push([r.url, extractHostname(r.url), page.page]);
       else if (!r.httpOk) {
         httpRows.push([r.url, page.page, String(r.httpStatusCode)]);
         // Only include HTTP failures from takeover target domains
         if (isTakeoverTarget(r.domain)) {
-          takeoverRows.push([r.url, page.page, `HTTP ${r.httpStatusCode}`]);
+          takeoverRows.push([r.url, extractHostname(r.url), page.page, `HTTP ${r.httpStatusCode}`]);
         }
       }
     });
   });
   const uniqueRows = Array.from(uniqueSet).map(url => [url]);
-  writeSubpage('dns-failures.html', 'DNS Failures', dnsRows, ['Resource URL', 'Parent Page'], dnsRows.length, false, true);
-  writeSubpage('connect-failures.html', 'Connect Failures', connectRows, ['Resource URL', 'Parent Page'], connectRows.length, false, true);
+  writeSubpage('dns-failures.html', 'DNS Failures', dnsRows, ['Resource URL', 'Hostname', 'Parent Page'], dnsRows.length, (row, i) => i === 0 || i === 2);
+  writeSubpage('connect-failures.html', 'Connect Failures', connectRows, ['Resource URL', 'Hostname', 'Parent Page'], connectRows.length, (row, i) => i === 0 || i === 2);
   writeSubpage('http-failures.html', 'HTTP Failures', httpRows, ['Resource URL', 'Parent Page', 'HTTP Status'], httpRows.length, (row, i) => i === 0 || i === 1);
-  writeSubpage('potential-takeovers.html', 'Potential Takeovers', takeoverRows, ['Resource URL', 'Parent Page', 'Failure Type'], takeoverRows.length, (row, i) => i === 0 || i === 1);
+  writeSubpage('potential-takeovers.html', 'Potential Takeovers', takeoverRows, ['Resource URL', 'Hostname', 'Parent Page', 'Failure Type'], takeoverRows.length, (row, i) => i === 0 || i === 1 || i === 2);
   writeSubpage('all-resources.html', 'All Resources Checked', allRows, ['Resource URL', 'Parent Page'], allRows.length, false, true);
   writeSubpage('unique-resources.html', 'Unique Resources Checked', uniqueRows, ['Resource URL'], uniqueRows.length, true);
 
@@ -1470,8 +1528,30 @@ process.on('SIGINT', () => {
   try {
     writeReportsAndExit();
   } catch (e) {
-    console.error('Failed to write report on interrupt:', e);
+    console.error('Failed to write report on interrupt:', e.message);
+    // Try to write a minimal report as last resort
+    try {
+      const minimalData = {
+        error: 'Circular reference prevented full report',
+        timestamp: new Date().toISOString(),
+        pages: results.length,
+        resources: totalRemoteResources
+      };
+      fs.writeFileSync(outputJson, JSON.stringify(minimalData, null, 2));
+      console.log(`Minimal report saved to: ${outputJson}`);
+    } catch (finalError) {
+      console.error('Could not write any report:', finalError.message);
+    }
     process.exit(1);
   }
 });
+
+// Helper function to extract hostname from URL
+function extractHostname(url) {
+  try {
+    return new URL(url).hostname;
+  } catch (e) {
+    return '';
+  }
+}
 
