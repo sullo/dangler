@@ -374,8 +374,7 @@ async function getRobotsRules(baseUrl, page) {
     console.warn('[!] Proxy mode: ignoring certificate errors for browser traffic. Results may include insecure connections.');
   }
 
-  let scanContext, scanPage;
-
+  let browser, context;
   if (flags.manual) {
     console.log('[Manual Mode] You must come back to this terminal and press ENTER to continue after logging in.');
     console.log('[Manual Mode] Press ENTER now to open the browser window.');
@@ -384,26 +383,20 @@ async function getRobotsRules(baseUrl, page) {
     const contextManual = await browserManual.newContext(contextOptions);
     const pageManual = await contextManual.newPage();
     console.log('[Manual Mode] Please log in or interact with the browser window.');
-    console.log('[Manual Mode] When finished, press ENTER in this terminal to continue. Do NOT close the browser window yourself.');
     await pageManual.goto(flags.url);
+    console.log('[Manual Mode] When finished, press ENTER in this terminal to continue. Do NOT close the browser window yourself.');
     await new Promise(resolve => process.stdin.once('data', resolve));
     // Extract cookies and storage from manual session
     const cookies = await contextManual.cookies();
     await browserManual.close();
     // Re-launch browser in headless mode for the scan
-    const browser2 = await chromium.launch({ headless: true });
-    const context2 = await browser2.newContext(contextOptions);
-    const page2 = await context2.newPage();
-    await context2.addCookies(cookies);
-    scanContext = context2;
-    scanPage = page2;
+    browser = await chromium.launch({ headless: true });
+    context = await browser.newContext(contextOptions);
+    await context.addCookies(cookies);
     console.log('[Manual Mode] Scan will continue with your session cookies.');
   } else {
-    const browser = await chromium.launch({ headless: true });
-    const context = await browser.newContext(contextOptions);
-    const page = await context.newPage();
-    scanContext = context;
-    scanPage = page;
+    browser = await chromium.launch({ headless: true });
+    context = await browser.newContext(contextOptions);
   }
 
   // Add cookies if specified
@@ -422,7 +415,7 @@ async function getRobotsRules(baseUrl, page) {
       return out;
     });
     if (flags.debug) console.log('Setting cookies:', allCookies);
-    await scanContext.addCookies(allCookies);
+    await context.addCookies(allCookies);
   }
 
   // Add headers if specified, but only for target domain and subdomains
@@ -430,7 +423,7 @@ async function getRobotsRules(baseUrl, page) {
   if (flags.headers.length > 0) {
     extraHeaders = parseHeaders(flags.headers);
     if (flags.debug) console.log('Setting extra HTTP headers (scoped):', extraHeaders);
-    scanPage.route('**', (route, request) => {
+    context.route('**', (route, request) => {
       try {
         const reqUrl = new URL(request.url());
         // Check if hostname matches target domain or subdomain
@@ -455,17 +448,6 @@ async function getRobotsRules(baseUrl, page) {
   let resources = [];
   let uniqueUrls = new Set();
   const startOrigin = (new URL(flags.url)).origin;
-  scanPage.on('request', request => {
-    const reqUrl = request.url();
-    if (reqUrl.startsWith('blob:')) return;
-    const reqOrigin = new URL(reqUrl).origin;
-    const isInternal = reqOrigin === startOrigin;
-    const stripped = stripQuery(reqUrl);
-    if (!isInternal && !uniqueUrls.has(stripped)) {
-      resources.push({ url: reqUrl, domain: new URL(reqUrl).hostname, resourceType: request.resourceType() });
-      uniqueUrls.add(stripped);
-    }
-  });
 
   const maxResources = flags.maxResources;
 
@@ -505,7 +487,7 @@ async function getRobotsRules(baseUrl, page) {
     let robotsRules = null;
     if (flags.robots) {
       const baseUrl = new URL(flags.url).origin;
-      robotsRules = await getRobotsRules(baseUrl, scanPage);
+      robotsRules = await getRobotsRules(baseUrl, context.newPage());
       if (flags.debug) {
         console.log(`[DEBUG] Robots.txt enabled for ${baseUrl}`);
       }
@@ -545,6 +527,7 @@ async function getRobotsRules(baseUrl, page) {
         let resources = [];
         let uniqueUrls = new Set();
 
+        const scanPage = await context.newPage();
         scanPage.on('request', request => {
           const reqUrl = request.url();
           if (reqUrl.startsWith('blob:')) return;
@@ -699,6 +682,8 @@ async function getRobotsRules(baseUrl, page) {
           writeReportsAndExit();
           return;
         }
+
+        await scanPage.close();
       }
     }
 
@@ -712,7 +697,7 @@ async function getRobotsRules(baseUrl, page) {
   } finally {
     // Always close browser resources
     try {
-      await scanContext.browser().close();
+      await browser.close();
     } catch (error) {
       console.error(`Error closing browser: ${error.message}`);
     }
@@ -1466,4 +1451,18 @@ function formatLocalDate(date) {
   return `${pad(date.getMonth() + 1)}/${pad(date.getDate())}/${date.getFullYear()} ` +
          `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
+
+// Add this before the main async function or at the top-level scope:
+let sigintCaught = false;
+process.on('SIGINT', () => {
+  if (sigintCaught) return; // Prevent double handling
+  sigintCaught = true;
+  console.log('\n[!] Scan interrupted by user (Ctrl+C). Writing partial report...');
+  try {
+    writeReportsAndExit();
+  } catch (e) {
+    console.error('Failed to write report on interrupt:', e);
+    process.exit(1);
+  }
+});
 
