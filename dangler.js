@@ -512,8 +512,17 @@ async function getRobotsRules(baseUrl, page) {
           }
         }
 
+        // Calculate queue length for display
+        let queueLen = queue.length + visitedPages.size;
+        let queueLimit = flags.maxPages;
+        let denom = queueLen > 0 ? queueLen : 1;
+        let maxReached = false;
+        if (queueLen >= queueLimit) {
+          denom = `${queueLimit}--MAX`;
+          maxReached = true;
+        }
         const pagesCrawled = visitedPages.size + 1;
-        console.log(`\n[#${pagesCrawled}/${maxPages}] Crawling: ${url}`);
+        console.log(`\n[#${pagesCrawled}/${denom}] Crawling: ${url}`);
 
         visitedPages.add(url);
 
