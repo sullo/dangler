@@ -59,7 +59,7 @@ const validFlags = new Set([
 const flags = {
   url: '',
   debug: false,
-  output: 'dangler_output',
+  output: 'report',
   maxPages: 50,
   maxResources: 1000,
   threadsCrawl: 5,
@@ -74,7 +74,7 @@ const flags = {
   insecure: false
 };
 
-const usageString = `\nUsage: node dangler.js --url <target> [options]\n\nRequired:\n  --url, -u <target>           Target website to crawl\n\nCommon options:\n  --output, -o <base>          Base name for output files (.json, .html). Default: dangler_output\n  --max-pages, -m <num>        Max pages to crawl. Default: 50\n  --proxy, -p <url>            Proxy URL (e.g. for Burp/ZAP)\n  --timeout, -t <ms>           Timeout for remote resource checks in ms. Default: 5000\n  --cookie, -C <cookie>        Set cookies for the browser session (can use multiple times)\n  --header, -H <header>        Set extra HTTP headers (can use multiple times)\n  --manual, -M                 Open browser for manual login/interaction\n  --debug, -d                  Enable debug output\n  --max-resources, -R <num>    Max number of remote resources to check (default: 1000)\n  --threads-crawl, -tc <num>   Number of concurrent page crawlers (default: 5)\n  --threads-resource, -tr <num>Number of concurrent resource checks (default: 20)\n  --pool-size, -ps <num>       Connection pool size per host (default: 10)\n  --robots, -r                 Honor robots.txt rules when crawling\n  --insecure, -k               Ignore HTTPS certificate errors\n  --help, -h                   Show this help message\n`;
+const usageString = `\nUsage: node dangler.js --url <target> [options]\n\nRequired:\n  --url, -u <target>           Target website to crawl\n\nCommon options:\n  --output, -o <base>          Base name for output files (.json, .html). Default: report\n  --max-pages, -m <num>        Max pages to crawl. Default: 50\n  --proxy, -p <url>            Proxy URL (e.g. for Burp/ZAP)\n  --timeout, -t <ms>           Timeout for remote resource checks in ms. Default: 5000\n  --cookie, -C <cookie>        Set cookies for the browser session (can use multiple times)\n  --header, -H <header>        Set extra HTTP headers (can use multiple times)\n  --manual, -M                 Open browser for manual login/interaction\n  --debug, -d                  Enable debug output\n  --max-resources, -R <num>    Max number of remote resources to check (default: 1000)\n  --threads-crawl, -tc <num>   Number of concurrent page crawlers (default: 5)\n  --threads-resource, -tr <num>Number of concurrent resource checks (default: 20)\n  --pool-size, -ps <num>       Connection pool size per host (default: 10)\n  --robots, -r                 Honor robots.txt rules when crawling\n  --insecure, -k               Ignore HTTPS certificate errors\n  --help, -h                   Show this help message\n`;
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -185,6 +185,86 @@ const hostCheckCache = new Map();
 const urlCheckCache = new Map();
 const hostMatchCache = new Map(); // Host match cache for takeover detection
 const fingerprintCache = new Map(); // Fingerprint cache for optimization
+
+// Dependency chain tracking
+let currentRequestChain = [];
+let chainIdCounter = 0;
+const requestChains = new Map(); // Maps request URL to its chain info
+
+// Exit control
+let shouldExit = false;
+let exitReason = '';
+let reachedResourceLimit = false;
+
+// Chain tracking class
+class RequestChain {
+  constructor(url, parentChain = null, triggerType = 'initial') {
+    this.id = ++chainIdCounter;
+    this.url = url;
+    this.parentChain = parentChain;
+    this.triggerType = triggerType; // 'initial', 'script', 'xhr', 'fetch', 'link', 'img', etc.
+    this.timestamp = Date.now();
+    this.children = [];
+    this.chainDepth = parentChain ? parentChain.chainDepth + 1 : 0;
+    
+    if (parentChain) {
+      parentChain.children.push(this);
+    }
+  }
+  
+  getFullChain() {
+    const chain = [];
+    let current = this;
+    while (current) {
+      chain.unshift({
+        url: current.url,
+        triggerType: current.triggerType,
+        timestamp: current.timestamp
+      });
+      current = current.parentChain;
+    }
+    return chain;
+  }
+  
+  getChainString() {
+    const chain = this.getFullChain();
+    return chain.map((item, index) => {
+      try {
+        const url = new URL(item.url);
+        const domain = url.hostname;
+        const path = url.pathname;
+        
+        // Truncate long paths intelligently
+        let displayPath = path;
+        if (path.length > 30) {
+          const lastSlash = path.lastIndexOf('/');
+          if (lastSlash > 0) {
+            const filename = path.substring(lastSlash + 1);
+            if (filename.length > 20) {
+              displayPath = path.substring(0, lastSlash + 1) + filename.substring(0, 17) + '...';
+            } else {
+              displayPath = '...' + path.substring(path.length - 27);
+            }
+          } else {
+            displayPath = path.substring(0, 27) + '...';
+          }
+        }
+        
+        const prefix = index === 0 ? '' : ' → ';
+        return `${prefix}${domain}${displayPath}`;
+      } catch (e) {
+        // Fallback to just domain if URL parsing fails
+        const domain = item.url.split('/')[2] || item.url;
+        const prefix = index === 0 ? '' : ' → ';
+        return `${prefix}${domain}`;
+      }
+    }).join('');
+  }
+  
+  getChainDepth() {
+    return this.chainDepth;
+  }
+}
 
 // Console capture variables
 let consoleLogBuffer = '';
@@ -508,205 +588,276 @@ async function getRobotsRules(baseUrl, page) {
 
     // Crawl worker function
     async function crawlWorker() {
-      while (queue.length > 0 && visitedPages.size < maxPages && totalRemoteResources < maxResources) {
-        const url = queue.shift();
-        if (!url || visitedPages.has(url)) continue;
+      if (flags.debug) {
+        console.log(`[DEBUG] Crawl worker starting`);
+        console.log(`[DEBUG] results array at start of worker:`, results, results.length, results === globalThis.results ? 'global' : 'local');
+      }
+      try {
+        while (queue.length > 0 && visitedPages.size < maxPages) {
+          // Check resource limit at the start of each iteration
+          if (totalRemoteResources >= maxResources) {
+            if (flags.debug) console.log(`[DEBUG] Resource limit reached, exiting crawl worker`);
+            break;
+          }
+          
+          const url = queue.shift();
+          if (!url || visitedPages.has(url)) continue;
 
-        // Check robots.txt if enabled
-        if (flags.robots && robotsRules) {
-          if (!isUrlAllowed(url, robotsRules)) {
-            if (flags.debug) console.log(`[DEBUG] Skipping ${url} (disallowed by robots.txt)`);
+          if (flags.debug) {
+            console.log(`[DEBUG] Processing URL: ${url}`);
+            console.log(`[DEBUG] Current totalRemoteResources: ${totalRemoteResources}, maxResources: ${maxResources}`);
+          }
+
+          // Check robots.txt if enabled
+          if (flags.robots && robotsRules) {
+            if (!isUrlAllowed(url, robotsRules)) {
+              if (flags.debug) console.log(`[DEBUG] Skipping ${url} (disallowed by robots.txt)`);
+              continue;
+            }
+          }
+
+          // Calculate queue length for display
+          let queueLen = queue.length + visitedPages.size;
+          let queueLimit = flags.maxPages;
+          let denom = queueLen > 0 ? queueLen : 1;
+          let maxReached = false;
+          if (queueLen >= queueLimit) {
+            denom = `${queueLimit}--MAX`;
+            maxReached = true;
+          }
+          const pagesCrawled = visitedPages.size + 1;
+          console.log(`\n[#${pagesCrawled}/${denom}] Crawling: ${url}`);
+
+          visitedPages.add(url);
+
+          // Apply crawl delay if specified in robots.txt
+          if (flags.robots && robotsRules && robotsRules.crawlDelay) {
+            if (flags.debug) console.log(`[DEBUG] Crawl delay: ${robotsRules.crawlDelay}s`);
+            await new Promise(resolve => setTimeout(resolve, robotsRules.crawlDelay * 1000));
+          }
+
+          // Make these local to the worker
+          let resources = [];
+          let uniqueUrls = new Set();
+
+          const scanPage = await context.newPage();
+          
+          // Track the current page as the root of the chain
+          const pageChain = new RequestChain(url, null, 'page');
+          currentRequestChain = [pageChain]; // Initialize with the page chain
+          
+          scanPage.on('request', request => {
+            const reqUrl = request.url();
+            if (reqUrl.startsWith('blob:')) return;
+            
+            const reqOrigin = new URL(reqUrl).origin;
+            const isInternal = reqOrigin === startOrigin;
+            const stripped = stripQuery(reqUrl);
+            
+            if (!isInternal && !uniqueUrls.has(stripped)) {
+              // Create a chain entry for this request
+              const resourceType = request.resourceType();
+              const triggerType = resourceType === 'script' ? 'script' : 
+                                resourceType === 'xhr' ? 'xhr' :
+                                resourceType === 'fetch' ? 'fetch' :
+                                resourceType === 'stylesheet' ? 'link' :
+                                resourceType === 'image' ? 'img' :
+                                resourceType === 'font' ? 'font' : 'other';
+              
+              // Find the current active chain (most recent script or the page itself)
+              let parentChain = pageChain;
+              if (currentRequestChain.length > 0) {
+                parentChain = currentRequestChain[currentRequestChain.length - 1];
+              }
+              
+              const requestChain = new RequestChain(reqUrl, parentChain, triggerType);
+              requestChains.set(reqUrl, requestChain);
+              
+              // If this is a script, add it to the current chain for future requests
+              if (resourceType === 'script') {
+                currentRequestChain.push(requestChain);
+              }
+              
+              resources.push({ 
+                url: reqUrl, 
+                domain: new URL(reqUrl).hostname, 
+                resourceType: resourceType,
+                chainId: requestChain.id,
+                chainDepth: requestChain.getChainDepth(),
+                chainString: requestChain.getChainString()
+              });
+              uniqueUrls.add(stripped);
+            }
+          });
+          
+          // Track when scripts finish loading to remove them from the chain
+          scanPage.on('response', response => {
+            const respUrl = response.url();
+            if (response.request().resourceType() === 'script') {
+              // Remove the script from current chain when it finishes loading
+              currentRequestChain = currentRequestChain.filter(chain => chain.url !== respUrl);
+            }
+          });
+
+          startSpinner('Crawling page...');
+          try {
+            await scanPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          } catch (error) {
+            stopSpinner();
+            if (error.message.includes('ERR_CERT_') || error.message.includes('CERT_')) {
+              console.error(`\n❌ SSL Certificate Error: ${error.message}`);
+              console.error(`💡 Try using the --insecure (-k) flag to ignore certificate errors:`);
+              console.error(`   node dangler.js --url ${flags.url} --insecure`);
+              process.exit(1);
+            }
+            if (flags.debug) console.log(`Failed to load ${url}: ${error.message}`);
+            scanPage.removeAllListeners('request');
             continue;
           }
-        }
-
-        // Calculate queue length for display
-        let queueLen = queue.length + visitedPages.size;
-        let queueLimit = flags.maxPages;
-        let denom = queueLen > 0 ? queueLen : 1;
-        let maxReached = false;
-        if (queueLen >= queueLimit) {
-          denom = `${queueLimit}--MAX`;
-          maxReached = true;
-        }
-        const pagesCrawled = visitedPages.size + 1;
-        console.log(`\n[#${pagesCrawled}/${denom}] Crawling: ${url}`);
-
-        visitedPages.add(url);
-
-        // Apply crawl delay if specified in robots.txt
-        if (flags.robots && robotsRules && robotsRules.crawlDelay) {
-          if (flags.debug) console.log(`[DEBUG] Crawl delay: ${robotsRules.crawlDelay}s`);
-          await new Promise(resolve => setTimeout(resolve, robotsRules.crawlDelay * 1000));
-        }
-
-        // Make these local to the worker
-        let resources = [];
-        let uniqueUrls = new Set();
-
-        const scanPage = await context.newPage();
-        scanPage.on('request', request => {
-          const reqUrl = request.url();
-          if (reqUrl.startsWith('blob:')) return;
-          const reqOrigin = new URL(reqUrl).origin;
-          const isInternal = reqOrigin === startOrigin;
-          const stripped = stripQuery(reqUrl);
-          if (!isInternal && !uniqueUrls.has(stripped)) {
-            resources.push({ url: reqUrl, domain: new URL(reqUrl).hostname, resourceType: request.resourceType() });
-            uniqueUrls.add(stripped);
-          }
-        });
-
-        startSpinner('Crawling page...');
-        try {
-          await scanPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-          await new Promise(resolve => setTimeout(resolve, 2000));
-        } catch (error) {
           stopSpinner();
-          if (error.message.includes('ERR_CERT_') || error.message.includes('CERT_')) {
-            console.error(`\n❌ SSL Certificate Error: ${error.message}`);
-            console.error(`💡 Try using the --insecure (-k) flag to ignore certificate errors:`);
-            console.error(`   node dangler.js --url ${flags.url} --insecure`);
-            process.exit(1);
-          }
-          if (flags.debug) console.log(`Failed to load ${url}: ${error.message}`);
           scanPage.removeAllListeners('request');
-          continue;
-        }
-        stopSpinner();
-        scanPage.removeAllListeners('request');
 
-        if (flags.debug) {
-          console.log(`[DEBUG] Found ${resources.length} external resources on ${url}`);
-          if (resources.length > 0) {
-            console.log(`[DEBUG] Sample resources:`, resources.slice(0, 3).map(r => r.url));
-          } else {
-            console.log(`[DEBUG] No external resources found - checking if page loaded properly`);
-            try {
-              const title = await scanPage.title();
-              console.log(`[DEBUG] Page title: "${title}"`);
-            } catch (e) {
-              console.log(`[DEBUG] Could not get page title: ${e.message}`);
+          if (flags.debug) {
+            console.log(`[DEBUG] Found ${resources.length} external resources on ${url}`);
+            if (resources.length > 0) {
+              console.log(`[DEBUG] Sample resources:`, resources.slice(0, 3).map(r => r.url));
+            } else {
+              console.log(`[DEBUG] No external resources found - checking if page loaded properly`);
+              try {
+                const title = await scanPage.title();
+                console.log(`[DEBUG] Page title: "${title}"`);
+              } catch (e) {
+                console.log(`[DEBUG] Could not get page title: ${e.message}`);
+              }
             }
           }
-        }
 
-        const hrefs = await scanPage.$$eval('a[href]', as => as.map(a => a.href));
-        hrefs.forEach(href => {
-          try {
-            const u = new URL(href);
-            if (allowedDomains.some(d => u.hostname.endsWith(d)) && !visitedPages.has(u.href)) {
-              // Check robots.txt if enabled
-              if (flags.robots && robotsRules) {
-                if (!isUrlAllowed(u.href, robotsRules)) {
-                  if (flags.debug) console.log(`[DEBUG] Not queueing ${u.href} (disallowed by robots.txt)`);
-                  return;
+          const hrefs = await scanPage.$$eval('a[href]', as => as.map(a => a.href));
+          hrefs.forEach(href => {
+            try {
+              const u = new URL(href);
+              if (allowedDomains.some(d => u.hostname.endsWith(d)) && !visitedPages.has(u.href)) {
+                // Check robots.txt if enabled
+                if (flags.robots && robotsRules) {
+                  if (!isUrlAllowed(u.href, robotsRules)) {
+                    if (flags.debug) console.log(`[DEBUG] Not queueing ${u.href} (disallowed by robots.txt)`);
+                    return;
+                  }
                 }
+                queue.push(u.href);
+                allDiscoveredPages.add(u.href);
               }
-              queue.push(u.href);
-              allDiscoveredPages.add(u.href);
-            }
-          } catch {}
-        });
+            } catch {}
+          });
 
-        startSpinner('Validating resources...');
-        try {
-          if (resources.length > 0) {
-            if (flags.debug) {
-              console.log(`[DEBUG] Processing ${resources.length} resources with ${flags.threadsResource} concurrent threads`);
-            }
-            
-            // Process resources in parallel with progress reporting
-            await asyncPool(flags.threadsResource, resources, async (r) => {
-              if (totalRemoteResources >= maxResources) return;
-              try {
-                const hostCheck = await getHostCheck(r.domain);
-                r.resolves = hostCheck.resolves;
-                r.tcpOk = hostCheck.tcpOk;
+          if (flags.debug) {
+            console.log(`[DEBUG] About to start resource validation for ${url}`);
+            console.log(`[DEBUG] Before validation - totalRemoteResources: ${totalRemoteResources}, maxResources: ${maxResources}`);
+          }
 
-                let urlCheck = null;
-                // Early exit: skip HTTP check if DNS fails
-                if (!r.resolves) {
+          // Limit the number of resources to validate to the remaining allowed resources
+          let allowed = Math.max(0, maxResources - totalRemoteResources);
+          let toValidate = resources.slice(0, allowed);
+          let toSkip = resources.slice(allowed);
+          toSkip.forEach(r => {
+            r.resolves = false;
+            r.tcpOk = false;
+            r.httpOk = false;
+            r.httpStatusCode = 0;
+            r.loadsOtherJS = false;
+            r.skippedDueToLimit = true;
+          });
+
+          if (flags.debug) {
+            console.log(`[DEBUG] Validating ${toValidate.length} resources, skipping ${toSkip.length} due to resource limit`);
+          }
+
+          startSpinner('Validating resources...');
+          try {
+            if (toValidate.length > 0) {
+              if (flags.debug) {
+                console.log(`[DEBUG] Processing ${toValidate.length} resources with ${flags.threadsResource} concurrent threads`);
+              }
+              // Process only allowed resources
+              await asyncPool(flags.threadsResource, toValidate, async (r) => {
+                try {
+                  const hostCheck = await getHostCheck(r.domain);
+                  r.resolves = hostCheck.resolves;
+                  r.tcpOk = hostCheck.tcpOk;
+
+                  let urlCheck = null;
+                  // Early exit: skip HTTP check if DNS fails
+                  if (!r.resolves) {
+                    r.httpOk = false;
+                    r.httpStatusCode = 0;
+                    r.loadsOtherJS = false;
+                  } else {
+                    // Only do HTTP check if DNS resolves
+                    urlCheck = await getUrlCheck(r.url);
+                    r.httpOk = urlCheck.httpOk;
+                    r.httpStatusCode = urlCheck.httpStatusCode;
+                    r.loadsOtherJS = urlCheck.loadsOtherJS;
+                  }
+
+                  // Check for potential takeover
+                  if (!r.resolves || (r.httpStatusCode >= 400 && r.httpStatusCode < 500)) {
+                    const hostname = extractHostname(r.url);
+                    if (takeoverTargets.has(hostname)) {
+                      r.takeoverVulnerable = true;
+                      r.takeoverService = takeoverTargets.get(hostname);
+                      potentialTakeovers++;
+                    }
+                  }
+
+                  totalRemoteResources++;
+                  if (flags.debug && totalRemoteResources % 10 === 0) {
+                    console.log(`[DEBUG] Processed ${totalRemoteResources} resources`);
+                  }
+                } catch (resourceError) {
+                  if (flags.debug) {
+                    console.error(`[DEBUG] Error processing resource ${r.url}: ${resourceError.message}`);
+                  }
+                  r.resolves = false;
+                  r.tcpOk = false;
                   r.httpOk = false;
                   r.httpStatusCode = 0;
                   r.loadsOtherJS = false;
-                } else {
-                  // Only do HTTP check if DNS resolves
-                  urlCheck = await getUrlCheck(r.url);
-                  r.httpOk = urlCheck.httpOk;
-                  r.httpStatusCode = urlCheck.httpStatusCode;
-                  r.loadsOtherJS = r.resourceType === 'script' ? urlCheck.loadsOtherJS : false;
+                  totalRemoteResources++;
                 }
-
-                // Takeover detection logic
-                const hostMatch = checkHostInFingerprints(r.domain);
-                
-                if (!r.resolves) {
-                  // Host doesn't resolve
-                  if (hostMatch.matches) {
-                    // 🚨 DANGER: Host doesn't resolve + in fingerprints
-                    r.takeoverVulnerable = true;
-                    r.takeoverService = hostMatch.service;
-                    r.takeoverReason = 'DNS failure + takeover target';
-                    r.takeoverIcon = '🚨';
-                  } else {
-                    // ⚠️ WARNING: Host doesn't resolve but not in fingerprints
-                    r.takeoverVulnerable = false;
-                    r.takeoverReason = 'DNS failure';
-                    r.takeoverIcon = '⚠️';
-                  }
-                } else {
-                  // Host resolves - check if fingerprint validation was done
-                  if (hostMatch.matches && r.httpOk && urlCheck && urlCheck.takeoverVulnerable) {
-                    // ❌ VULNERABLE: Host resolves + fingerprint matches
-                    r.takeoverVulnerable = true;
-                    r.takeoverService = urlCheck.takeoverService;
-                    r.takeoverReason = urlCheck.takeoverReason;
-                    r.takeoverIcon = '❌';
-                  }
-                  // No icon for resolved hosts that aren't vulnerable
-                }
-
-                r.possibleTakeover = r.takeoverVulnerable;
-                if (r.possibleTakeover) potentialTakeovers++;
-              } catch (resourceError) {
-                if (flags.debug) console.log(`Error validating resource ${r.url}: ${resourceError.message}`);
-                // Set default values for failed resource
-                r.resolves = false;
-                r.tcpOk = false;
-                r.httpOk = false;
-                r.httpStatusCode = 0;
-                r.loadsOtherJS = false;
-                r.takeoverVulnerable = false;
-                r.possibleTakeover = false;
-              }
-            });
-          } else {
+              });
+            }
+          } catch (error) {
             if (flags.debug) {
-              console.log(`[DEBUG] No external resources found on ${url}`);
+              console.error(`[DEBUG] Error during resource validation: ${error.message}`);
             }
           }
-        } catch (error) {
           stopSpinner();
-          if (flags.debug) console.log(`Error validating resources for ${url}: ${error.message}`);
-          // Continue with the page even if resource validation fails
-        }
-        stopSpinner();
 
-        results.push({ page: url, resources });
-
-        if (visitedPages.size >= maxPages) {
-          console.warn(`Max pages crawled (${maxPages}) reached. Ending scan.`);
-          writeReportsAndExit();
-          return;
+          // Always push results for the current page after resource validation
+          if (flags.debug) {
+            console.log(`[DEBUG] About to push results for ${url}: ${resources.length} resources`);
+            console.log(`[DEBUG] Results array length before push: ${results.length}`);
+          }
+          results.push({ page: url, resources });
+          if (flags.debug) {
+            console.log(`[DEBUG] Pushed results for ${url}: ${resources.length} resources`);
+            console.log(`[DEBUG] Total results array length after push: ${results.length}`);
+            console.log(`[DEBUG] results array after push:`, results, results.length, results === globalThis.results ? 'global' : 'local');
+          }
+          await scanPage.close();
         }
-        if (totalRemoteResources >= maxResources) {
-          console.warn(`Max resources checked (${maxResources}) reached. Ending scan.`);
-          writeReportsAndExit();
-          return;
+        if (flags.debug) {
+          console.log(`[DEBUG] Crawl worker loop completed normally`);
         }
-
-        await scanPage.close();
+      } catch (error) {
+        if (flags.debug) {
+          console.error(`[DEBUG] Crawl worker error: ${error.message}`);
+          console.error(`[DEBUG] Crawl worker stack: ${error.stack}`);
+        }
+      }
+      if (flags.debug) {
+        console.log(`[DEBUG] Crawl worker function ending`);
       }
     }
 
@@ -1022,6 +1173,21 @@ function stopSpinner() {
 // === REPORT ===
 function writeReportsAndExit() {
   stopSpinner();
+  if (flags.debug) {
+    console.log(`[DEBUG] writeReportsAndExit called with results.length = ${results.length}`);
+    console.log(`[DEBUG] results array in writeReportsAndExit:`, results, results.length, results === globalThis.results ? 'global' : 'local');
+    results.forEach((result, idx) => {
+      console.log(`[DEBUG] Result[${idx}]: page=${result.page}, resources=${result.resources.length}`);
+    });
+  }
+  
+  if (flags.debug) {
+    console.log(`[DEBUG] writeReportsAndExit called with ${results.length} results`);
+    results.forEach((result, index) => {
+      console.log(`[DEBUG] Result ${index}: page=${result.page}, resources=${result.resources.length}`);
+    });
+  }
+
   // Set stop time and duration
   const scanStopDate = new Date();
   scanStopLocal = formatLocalDate(scanStopDate);
@@ -1051,7 +1217,8 @@ function writeReportsAndExit() {
         tcpOk: r.tcpOk,
         httpOk: r.httpOk,
         httpStatusCode: r.httpStatusCode,
-        loadsOtherJS: r.loadsOtherJS
+        loadsOtherJS: r.loadsOtherJS,
+        chainString: r.chainString || 'Direct'
       };
       
       // Only add takeover properties if they exist
@@ -1247,26 +1414,51 @@ function writeReportsAndExit() {
     page.resources.forEach(r => {
       allRows.push([r.url, page.page]);
       if (!r.resolves) {
-        dnsRows.push([r.url, extractHostname(r.url), page.page]);
-        takeoverRows.push([r.url, extractHostname(r.url), page.page, 'DNS failure']);
+        dnsRows.push([r.url, extractHostname(r.url), page.page, r.chainString || 'Direct']);
+        takeoverRows.push([r.url, extractHostname(r.url), page.page, 'DNS failure', r.chainString || 'Direct']);
       }
-      else if (!r.tcpOk) connectRows.push([r.url, extractHostname(r.url), page.page]);
+      else if (!r.tcpOk) {
+        connectRows.push([r.url, extractHostname(r.url), page.page, r.chainString || 'Direct']);
+      }
       else if (!r.httpOk) {
         httpRows.push([r.url, page.page, String(r.httpStatusCode)]);
         // Only include HTTP failures from takeover target domains
         if (isTakeoverTarget(r.domain)) {
-          takeoverRows.push([r.url, extractHostname(r.url), page.page, `HTTP ${r.httpStatusCode}`]);
+          takeoverRows.push([r.url, extractHostname(r.url), page.page, `HTTP ${r.httpStatusCode}`, r.chainString || 'Direct']);
         }
       }
     });
   });
   const uniqueRows = Array.from(uniqueSet).map(url => [url]);
-  writeSubpage('dns-failures.html', 'DNS Failures', dnsRows, ['Resource URL', 'Hostname', 'Parent Page'], dnsRows.length, (row, i) => i === 0 || i === 2);
-  writeSubpage('connect-failures.html', 'Connect Failures', connectRows, ['Resource URL', 'Hostname', 'Parent Page'], connectRows.length, (row, i) => i === 0 || i === 2);
+  writeSubpage('dns-failures.html', 'DNS Failures', dnsRows, ['Resource URL', 'Hostname', 'Parent Page', 'Dependency Chain'], dnsRows.length, (row, i) => i === 0 || i === 2);
+  writeSubpage('connect-failures.html', 'Connect Failures', connectRows, ['Resource URL', 'Hostname', 'Parent Page', 'Dependency Chain'], connectRows.length, (row, i) => i === 0 || i === 2);
   writeSubpage('http-failures.html', 'HTTP Failures', httpRows, ['Resource URL', 'Parent Page', 'HTTP Status'], httpRows.length, (row, i) => i === 0 || i === 1);
-  writeSubpage('potential-takeovers.html', 'Potential Takeovers', takeoverRows, ['Resource URL', 'Hostname', 'Parent Page', 'Failure Type'], takeoverRows.length, (row, i) => i === 0 || i === 1 || i === 2);
+  writeSubpage('potential-takeovers.html', 'Potential Takeovers', takeoverRows, ['Resource URL', 'Hostname', 'Parent Page', 'Failure Type', 'Dependency Chain'], takeoverRows.length, (row, i) => i === 0 || i === 1 || i === 2);
   writeSubpage('all-resources.html', 'All Resources Checked', allRows, ['Resource URL', 'Parent Page'], allRows.length, false, true);
   writeSubpage('unique-resources.html', 'Unique Resources Checked', uniqueRows, ['Resource URL'], uniqueRows.length, true);
+  
+  // Create dependency chains page
+  const chainRows = [];
+  results.forEach(page => {
+    page.resources.forEach(r => {
+      chainRows.push([
+        r.url, 
+        extractHostname(r.url), 
+        page.page, 
+        r.chainString || 'Direct', 
+        r.resourceType
+      ]);
+    });
+  });
+  // Sort by chain depth (deepest first) - using the original chainDepth for sorting but not displaying
+  chainRows.sort((a, b) => {
+    const aResource = results.flatMap(p => p.resources).find(r => r.url === a[0]);
+    const bResource = results.flatMap(p => p.resources).find(r => r.url === b[0]);
+    const aDepth = aResource ? (aResource.chainDepth || 0) : 0;
+    const bDepth = bResource ? (bResource.chainDepth || 0) : 0;
+    return bDepth - aDepth;
+  });
+  writeSubpage('dependency-chains.html', 'Dependency Chains', chainRows, ['Resource URL', 'Hostname', 'Parent Page', 'Dependency Chain', 'Resource Type'], chainRows.length, (row, i) => i === 0 || i === 2);
 
   // --- Failures Table ---
   // (Removed as requested)

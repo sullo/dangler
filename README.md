@@ -44,7 +44,7 @@ node dangler.js --url <target-site> [options]
 - `--url` or `-u` — Target website to crawl.
 
 ### Common options:
-- `--output` or `-o` — Base name for output files (`.json` and `.html`). Default: `dangler_output`.
+- `--output` or `-o` — Base name for output files (`.json` and `.html`). Default: `report`.
 - `--max-pages` or `-m` — Max pages to crawl. Default: `50`.
 - `--proxy` or `-p` — Proxy URL (e.g. for Burp/ZAP).
 - `--timeout` or `-t` — Timeout for remote resource checks in milliseconds. Default: `5000` (5 seconds).
