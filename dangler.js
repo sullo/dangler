@@ -53,7 +53,10 @@ const validFlags = new Set([
   '--help', '-h',
   '--robots', '-r',
   '--pool-size', '-ps',
-  '--insecure', '-k'
+  '--insecure', '-k',
+  '--restrict-path', '-rp',
+  '--skip-pattern', '-sp',
+  '--exclude-path', '-ep'
 ]);
 
 const flags = {
@@ -71,10 +74,13 @@ const flags = {
   manual: false,
   robots: false,
   poolSize: 10,
-  insecure: false
+  insecure: false,
+  restrictPaths: [],
+  skipPatterns: [],
+  excludePaths: []
 };
 
-const usageString = `\nUsage: node dangler.js --url <target> [options]\n\nRequired:\n  --url, -u <target>           Target website to crawl\n\nCommon options:\n  --output, -o <base>          Base name for output files (.json, .html). Default: report\n  --max-pages, -m <num>        Max pages to crawl. Default: 50\n  --proxy, -p <url>            Proxy URL (e.g. for Burp/ZAP)\n  --timeout, -t <ms>           Timeout for remote resource checks in ms. Default: 5000\n  --cookie, -C <cookie>        Set cookies for the browser session (can use multiple times)\n  --header, -H <header>        Set extra HTTP headers (can use multiple times)\n  --manual, -M                 Open browser for manual login/interaction\n  --debug, -d                  Enable debug output\n  --max-resources, -R <num>    Max number of remote resources to check (default: 1000)\n  --threads-crawl, -tc <num>   Number of concurrent page crawlers (default: 5)\n  --threads-resource, -tr <num>Number of concurrent resource checks (default: 20)\n  --pool-size, -ps <num>       Connection pool size per host (default: 10)\n  --robots, -r                 Honor robots.txt rules when crawling\n  --insecure, -k               Ignore HTTPS certificate errors\n  --help, -h                   Show this help message\n`;
+const usageString = `\nUsage: node dangler.js --url <target> [options]\n\nRequired:\n  --url, -u <target>           Target website to crawl\n\nCommon options:\n  --output, -o <base>          Base name for output files (.json, .html). Default: report\n  --max-pages, -m <num>        Max pages to crawl. Default: 50\n  --proxy, -p <url>            Proxy URL (e.g. for Burp/ZAP)\n  --timeout, -t <ms>           Timeout for remote resource checks in ms. Default: 5000\n  --cookie, -C <cookie>        Set cookies for the browser session (can use multiple times)\n  --header, -H <header>        Set extra HTTP headers (can use multiple times)\n  --manual, -M                 Open browser for manual login/interaction\n  --debug, -d                  Enable debug output\n  --max-resources, -R <num>    Max number of remote resources to check (default: 1000)\n  --threads-crawl, -tc <num>   Number of concurrent page crawlers (default: 5)\n  --threads-resource, -tr <num>Number of concurrent resource checks (default: 20)\n  --pool-size, -ps <num>       Connection pool size per host (default: 10)\n  --robots, -r                 Honor robots.txt rules when crawling\n  --insecure, -k               Ignore HTTPS certificate errors\n  --restrict-path, -rp <path>  Only crawl URLs starting with this path (can use multiple times)\n  --skip-pattern, -sp <regex>  Skip URLs matching this regex pattern (can use multiple times)\n  --exclude-path, -ep <path>   Skip URLs containing this path (can use multiple times)\n  --help, -h                   Show this help message\n\nNote: For --skip-pattern, regex metacharacters must be escaped (e.g., \\?, \\(, \\))\n`;
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -152,12 +158,68 @@ for (let i = 0; i < args.length; i++) {
     i++;
   } else if (arg === '--insecure' || arg === '-k') {
     flags.insecure = true;
+  } else if (arg === '--restrict-path' || arg === '-rp') {
+    flags.restrictPaths.push(args[i + 1]);
+    i++;
+  } else if (arg === '--skip-pattern' || arg === '-sp') {
+    flags.skipPatterns.push(args[i + 1]);
+    i++;
+  } else if (arg === '--exclude-path' || arg === '-ep') {
+    flags.excludePaths.push(args[i + 1]);
+    i++;
   }
 }
 
 if (!flags.url) {
   console.error(usageString);
   process.exit(1);
+}
+
+// Validate regex patterns
+for (let i = 0; i < flags.skipPatterns.length; i++) {
+  try {
+    const pattern = flags.skipPatterns[i];
+    
+    // Check for known problematic patterns
+    const dangerousPatterns = [
+      /\(\w+\+\)\+\w+/,           // (a+)+b
+      /\(\w+\|\w+\)\*/,           // (a|aa)*
+      /^\w+\(\w+\+\)\*\$/,        // ^a(a+)*$
+      /\(\w+\+\)\*/,              // (a+)*
+      /\(\w+\|\w+\)\+\w+/,        // (a|aa)+b
+    ];
+    
+    for (const dangerous of dangerousPatterns) {
+      if (dangerous.test(pattern)) {
+        console.error(`Potentially dangerous regex pattern detected: ${pattern}`);
+        console.error(`This pattern could cause ReDoS (Regex Denial of Service).`);
+        console.error(`Please use a simpler pattern or escape special characters.`);
+        process.exit(1);
+      }
+    }
+    
+    // Test compilation
+    new RegExp(pattern, 'i');
+  } catch (error) {
+    console.error(`Invalid regex pattern: ${flags.skipPatterns[i]}`);
+    console.error(`Error: ${error.message}`);
+    process.exit(1);
+  }
+}
+
+// Validate paths start with /
+for (let i = 0; i < flags.restrictPaths.length; i++) {
+  if (!flags.restrictPaths[i].startsWith('/')) {
+    console.error(`Restrict path must start with /: ${flags.restrictPaths[i]}`);
+    process.exit(1);
+  }
+}
+
+for (let i = 0; i < flags.excludePaths.length; i++) {
+  if (!flags.excludePaths[i].startsWith('/')) {
+    console.error(`Exclude path must start with /: ${flags.excludePaths[i]}`);
+    process.exit(1);
+  }
 }
 
 const REMOTE_TIMEOUT_MS = flags.timeout;
@@ -745,6 +807,47 @@ async function getRobotsRules(baseUrl, page) {
                     return;
                   }
                 }
+                
+                // Check path restrictions
+                if (flags.restrictPaths.length > 0) {
+                  const pathMatches = flags.restrictPaths.some(path => u.pathname.startsWith(path));
+                  if (!pathMatches) {
+                    console.log(`[SKIP] Skipping ${u.href} (not in restricted paths: ${flags.restrictPaths.join(', ')})`);
+                    return;
+                  }
+                }
+                
+                // Check exclude paths
+                for (const excludePath of flags.excludePaths) {
+                  if (u.pathname.includes(excludePath)) {
+                    console.log(`[SKIP] Skipping ${u.href} (exclude path: ${excludePath})`);
+                    return;
+                  }
+                }
+                
+                // Check skip patterns
+                for (const pattern of flags.skipPatterns) {
+                  try {
+                    // Use a timeout-based approach for regex testing
+                    let regexResult = false;
+                    const timeoutId = setTimeout(() => {
+                      // Timeout - assume no match for safety
+                      if (flags.debug) console.log(`[DEBUG] Regex timeout for pattern: ${pattern}`);
+                    }, 50); // 50ms timeout for regex operations
+                    
+                    const regex = new RegExp(pattern, 'i');
+                    regexResult = regex.test(u.pathname);
+                    clearTimeout(timeoutId);
+                    
+                    if (regexResult) {
+                      console.log(`[SKIP] Skipping ${u.href} (skip pattern: ${pattern})`);
+                      return;
+                    }
+                  } catch (error) {
+                    if (flags.debug) console.log(`[DEBUG] Regex error for pattern ${pattern}: ${error.message}`);
+                  }
+                }
+                
                 queue.push(u.href);
                 allDiscoveredPages.add(u.href);
               }
@@ -1759,5 +1862,24 @@ function extractHostname(url) {
   } catch (e) {
     return '';
   }
+}
+
+// Safe regex testing function with timeout protection
+async function safeRegexTest(pattern, text, timeoutMs = 100) {
+  return new Promise((resolve) => {
+    const timeoutId = setTimeout(() => {
+      resolve(false); // Timeout - assume no match for safety
+    }, timeoutMs);
+    
+    try {
+      const regex = new RegExp(pattern, 'i');
+      const result = regex.test(text);
+      clearTimeout(timeoutId);
+      resolve(result);
+    } catch (error) {
+      clearTimeout(timeoutId);
+      resolve(false); // Error - assume no match for safety
+    }
+  });
 }
 

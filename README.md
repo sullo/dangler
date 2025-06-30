@@ -47,12 +47,41 @@ node dangler.js --url <target-site> [options]
 - `--output` or `-o` — Base name for output files (`.json` and `.html`). Default: `report`.
 - `--max-pages` or `-m` — Max pages to crawl. Default: `50`.
 - `--proxy` or `-p` — Proxy URL (e.g. for Burp/ZAP).
-- `--timeout` or `-t` — Timeout for remote resource checks in milliseconds. Default: `5000` (5 seconds).
-- `--cookie` or `-C` — Set cookies for the browser session. Accepts a string in the format you'd copy from a browser or proxy, e.g. `foo=bar; baz=qux; Path=/; Domain=example.com; Secure`. You can use this flag multiple times.
-- `--header` or `-H` — Set extra HTTP headers for all requests. Use multiple times for multiple headers, e.g. `-H "X-Test: foo" -H "User-Agent: custom"`.
-- `--manual` or `-M` — Open a non-headless browser window for manual login or interaction. Close the window to continue the scan with your session.
-- `--debug` or `-d` — Enable debug output for extra detail.
-- `--insecure` or `-k` — Ignore HTTPS certificate errors (useful for self-signed certificates or IP-based access).
+- `--timeout` or `-t` — Timeout for remote resource checks in ms. Default: `5000`.
+- `--cookie` or `-C` — Set cookies for the browser session (can use multiple times).
+- `--header` or `-H` — Set extra HTTP headers (can use multiple times).
+- `--manual` or `-M` — Open browser for manual login/interaction.
+- `--debug` or `-d` — Enable debug output.
+- `--max-resources` or `-R` — Max number of remote resources to check. Default: `1000`.
+- `--threads-crawl` or `-tc` — Number of concurrent page crawlers. Default: `5`.
+- `--threads-resource` or `-tr` — Number of concurrent resource checks. Default: `20`.
+- `--pool-size` or `-ps` — Connection pool size per host. Default: `10`.
+- `--robots` or `-r` — Honor robots.txt rules when crawling.
+- `--insecure` or `-k` — Ignore HTTPS certificate errors.
+- `--restrict-path` or `-rp` — Only crawl URLs starting with this path (can use multiple times).
+- `--skip-pattern` or `-sp` — Skip URLs matching this regex pattern (can use multiple times).
+- `--exclude-path` or `-ep` — Skip URLs containing this path (can use multiple times).
+
+### Path Control Options
+
+The crawler supports three types of path-based controls to fine-tune what gets crawled:
+
+**Path Restrictions (`--restrict-path`)**:
+- Only crawl URLs that start with the specified path(s)
+- Example: `--restrict-path /good/ --restrict-path /public/` will only crawl URLs like `/good/page.html` or `/public/docs/`
+- Resources are still loaded from any domain regardless of path restrictions
+
+**Exclude Paths (`--exclude-path`)**:
+- Skip crawling URLs that contain the specified path(s)
+- Example: `--exclude-path /admin/ --exclude-path /private/` will skip URLs like `/admin/dashboard` or `/user/private/profile`
+
+**Skip Patterns (`--skip-pattern`)**:
+- Skip crawling URLs that match regex patterns
+- Example: `--skip-pattern "sign-?off" --skip-pattern "log-?(out|off)"` will skip URLs like `/sign-off`, `/signoff`, `/log-out`, `/logoff`
+- **Important**: Regex metacharacters must be escaped (e.g., `\?`, `\(`, `\)`, `\|`)
+- **Security**: The tool includes ReDoS (Regex Denial of Service) protection and will reject potentially dangerous patterns
+
+All skipped URLs are logged to the console with the reason for skipping.
 
 ### Resource and Performance Options
 
