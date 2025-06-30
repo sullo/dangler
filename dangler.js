@@ -1303,7 +1303,7 @@ function writeReportsAndExit() {
   <hr>
   <h2>Details</h2>
   <table class="halfwidth">
-    <tr><td class="label">Target</td><td class="value">${escapeHtml(flags.url)}</td></tr>
+    <tr><td class="label">Target</td><td class="value"><a href="${sanitizeUrl(flags.url)}" target="_blank">${escapeHtml(flags.url)}</a></td></tr>
     <tr><td class="label">Max Pages</td><td class="value">${escapeHtml(String(flags.maxPages))}</td></tr>
     <tr><td class="label">CLI Args</td><td class="value">dangler.js ${escapeHtml(process.argv.slice(2).join(' '))}</td></tr>
   </table>`;
