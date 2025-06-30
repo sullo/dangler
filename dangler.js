@@ -1417,7 +1417,7 @@ function writeReportsAndExit() {
    <tr><td class="label">Start</td><td class="value">${escapeHtml(scanStartLocal)}</td></tr>
    <tr><td class="label">Stop</td><td class="value">${escapeHtml(scanStopLocal)}</td></tr>
    <tr><td class="label">Duration</td><td class="value">${escapeHtml(scanDuration)}</td></tr>
-   <tr><td class="label">Pages Crawled</td><td class="value">${pagesCrawled} of ${totalPagesFound}</td></tr>
+   <tr><td class="label">Pages Crawled</td><td class="value"><a href="crawled-urls.html">${pagesCrawled} of ${totalPagesFound}</a></td></tr>
    <tr><td class="label">Remote Resources Checked</td><td class="value">${totalRemoteResources}</td></tr>
    <tr><td class="label">Potential Takeovers</td><td class="value"><a href="potential-takeovers.html">${potentialTakeovers}</a></td></tr>
    <tr><td class="label">Console Log</td><td class="value"><a href="console-log.html">View</a></td></tr>
@@ -1562,6 +1562,13 @@ function writeReportsAndExit() {
     return bDepth - aDepth;
   });
   writeSubpage('dependency-chains.html', 'Dependency Chains', chainRows, ['Resource URL', 'Hostname', 'Parent Page', 'Dependency Chain', 'Resource Type'], chainRows.length, (row, i) => i === 0 || i === 2);
+
+  // Create crawled URLs page
+  const crawledRows = [];
+  results.forEach(page => {
+    crawledRows.push([page.page]);
+  });
+  writeSubpage('crawled-urls.html', 'Crawled URLs', crawledRows, ['URL'], crawledRows.length, true);
 
   // --- Failures Table ---
   // (Removed as requested)
