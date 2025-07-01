@@ -9,7 +9,6 @@
 - cli timeout controls for resource checks
 - retry flag (0 default)
 - 2nd party cookies
-- path exclusions (regex)
 - add type to tables
 - sortable tables
 - filterable tables
@@ -54,3 +53,6 @@ Test:
 	- facebook
 	- google analytics
 
+
+# Look at
+- https://www.observepoint.com/

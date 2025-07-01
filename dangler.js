@@ -56,7 +56,8 @@ const validFlags = new Set([
   '--insecure', '-k',
   '--restrict-path', '-rp',
   '--skip-pattern', '-sp',
-  '--exclude-path', '-ep'
+  '--exclude-path', '-ep',
+  '--user-agent', '-ua'
 ]);
 
 const flags = {
@@ -77,10 +78,11 @@ const flags = {
   insecure: false,
   restrictPaths: [],
   skipPatterns: [],
-  excludePaths: []
+  excludePaths: [],
+  userAgent: ''
 };
 
-const usageString = `\nUsage: node dangler.js --url <target> [options]\n\nRequired:\n  --url, -u <target>           Target website to crawl\n\nCommon options:\n  --output, -o <base>          Base name for output files (.json, .html). Default: report\n  --max-pages, -m <num>        Max pages to crawl. Default: 50\n  --proxy, -p <url>            Proxy URL (e.g. for Burp/ZAP)\n  --timeout, -t <ms>           Timeout for remote resource checks in ms. Default: 5000\n  --cookie, -C <cookie>        Set cookies for the browser session (can use multiple times)\n  --header, -H <header>        Set extra HTTP headers (can use multiple times)\n  --manual, -M                 Open browser for manual login/interaction\n  --debug, -d                  Enable debug output\n  --max-resources, -R <num>    Max number of remote resources to check (default: 1000)\n  --threads-crawl, -tc <num>   Number of concurrent page crawlers (default: 5)\n  --threads-resource, -tr <num>Number of concurrent resource checks (default: 20)\n  --pool-size, -ps <num>       Connection pool size per host (default: 10)\n  --robots, -r                 Honor robots.txt rules when crawling\n  --insecure, -k               Ignore HTTPS certificate errors\n  --restrict-path, -rp <path>  Only crawl URLs starting with this path (can use multiple times)\n  --skip-pattern, -sp <regex>  Skip URLs matching this regex pattern (can use multiple times)\n  --exclude-path, -ep <path>   Skip URLs containing this path (can use multiple times)\n  --help, -h                   Show this help message\n\nNote: For --skip-pattern, regex metacharacters must be escaped (e.g., \\?, \\(, \\))\n`;
+const usageString = `\nUsage: node dangler.js --url <target> [options]\n\nRequired:\n  --url, -u <target>           Target website to crawl\n\nCommon options:\n  --output, -o <base>          Base name for output files (.json, .html). Default: report\n  --max-pages, -m <num>        Max pages to crawl. Default: 50\n  --proxy, -p <url>            Proxy URL (e.g. for Burp/ZAP)\n  --timeout, -t <ms>           Timeout for remote resource checks in ms. Default: 5000\n  --cookie, -C <cookie>        Set cookies for the browser session (can use multiple times)\n  --header, -H <header>        Set extra HTTP headers (can use multiple times)\n  --manual, -M                 Open browser for manual login/interaction\n  --debug, -d                  Enable debug output\n  --max-resources, -R <num>    Max number of remote resources to check (default: 1000)\n  --threads-crawl, -tc <num>   Number of concurrent page crawlers (default: 5)\n  --threads-resource, -tr <num>Number of concurrent resource checks (default: 20)\n  --pool-size, -ps <num>       Connection pool size per host (default: 10)\n  --robots, -r                 Honor robots.txt rules when crawling\n  --insecure, -k               Ignore HTTPS certificate errors\n  --restrict-path, -rp <path>  Only crawl URLs starting with this path (can use multiple times)\n  --skip-pattern, -sp <regex>  Skip URLs matching this regex pattern (can use multiple times)\n  --exclude-path, -ep <path>   Skip URLs containing this path (can use multiple times)\n  --user-agent, -ua <string>   Override the default user agent string\n  --help, -h                   Show this help message\n\nNote: For --skip-pattern, regex metacharacters must be escaped (e.g., \\?, \\(, \\))\n`;
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -166,6 +168,9 @@ for (let i = 0; i < args.length; i++) {
     i++;
   } else if (arg === '--exclude-path' || arg === '-ep') {
     flags.excludePaths.push(args[i + 1]);
+    i++;
+  } else if (arg === '--user-agent' || arg === '-ua') {
+    flags.userAgent = args[i + 1];
     i++;
   }
 }
@@ -513,7 +518,7 @@ async function getRobotsRules(baseUrl, page) {
   if (flags.debug) console.log('Debug mode ON');
 
   // Prepare context options before browser creation
-  const contextOptions = { userAgent: DEFAULT_USER_AGENT };
+  const contextOptions = { userAgent: flags.userAgent || DEFAULT_USER_AGENT };
   if (flags.proxy) {
     contextOptions.proxy = { server: flags.proxy };
     contextOptions.ignoreHTTPSErrors = true;

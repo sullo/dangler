@@ -61,6 +61,7 @@ node dangler.js --url <target-site> [options]
 - `--restrict-path` or `-rp` — Only crawl URLs starting with this path (can use multiple times).
 - `--skip-pattern` or `-sp` — Skip URLs matching this regex pattern (can use multiple times).
 - `--exclude-path` or `-ep` — Skip URLs containing this path (can use multiple times).
+- `--user-agent` or `-ua` — Override the default user agent string for all browser requests.
 
 ### Path Control Options
 
