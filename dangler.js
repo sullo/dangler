@@ -1,5 +1,5 @@
 // Modern Chromium user agent (Chrome 124 on macOS)
-const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.91 Safari/537.36';
+const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 // The Dangler - dangler.js
 // Full version: HTTP status code, deduped resources, clear failure output
 
@@ -65,7 +65,7 @@ const flags = {
   debug: false,
   output: 'report',
   maxPages: 50,
-  maxResources: 1000,
+  maxResources: 5000,
   threadsCrawl: 5,
   threadsResource: 20,
   proxy: '',
@@ -82,7 +82,7 @@ const flags = {
   userAgent: ''
 };
 
-const usageString = `\nUsage: node dangler.js --url <target> [options]\n\nRequired:\n  --url, -u <target>           Target website to crawl\n\nCommon options:\n  --output, -o <base>          Base name for output files (.json, .html). Default: report\n  --max-pages, -m <num>        Max pages to crawl. Default: 50\n  --proxy, -p <url>            Proxy URL (e.g. for Burp/ZAP)\n  --timeout, -t <ms>           Timeout for remote resource checks in ms. Default: 5000\n  --cookie, -C <cookie>        Set cookies for the browser session (can use multiple times)\n  --header, -H <header>        Set extra HTTP headers (can use multiple times)\n  --manual, -M                 Open browser for manual login/interaction\n  --debug, -d                  Enable debug output\n  --max-resources, -R <num>    Max number of remote resources to check (default: 1000)\n  --threads-crawl, -tc <num>   Number of concurrent page crawlers (default: 5)\n  --threads-resource, -tr <num>Number of concurrent resource checks (default: 20)\n  --pool-size, -ps <num>       Connection pool size per host (default: 10)\n  --robots, -r                 Honor robots.txt rules when crawling\n  --insecure, -k               Ignore HTTPS certificate errors\n  --restrict-path, -rp <path>  Only crawl URLs starting with this path (can use multiple times)\n  --skip-pattern, -sp <regex>  Skip URLs matching this regex pattern (can use multiple times)\n  --exclude-path, -ep <path>   Skip URLs containing this path (can use multiple times)\n  --user-agent, -ua <string>   Override the default user agent string\n  --help, -h                   Show this help message\n\nNote: For --skip-pattern, regex metacharacters must be escaped (e.g., \\?, \\(, \\))\n`;
+const usageString = `\nUsage: node dangler.js --url <target> [options]\n\nRequired:\n  --url, -u <target>           Target website to crawl\n\nCommon options:\n  --output, -o <base>          Base name for output files (.json, .html). Default: report\n  --max-pages, -m <num>        Max pages to crawl. Default: 50\n  --proxy, -p <url>            Proxy URL (e.g. for Burp/ZAP)\n  --timeout, -t <ms>           Timeout for remote resource checks in ms. Default: 5000\n  --cookie, -C <cookie>        Set cookies for the browser session (can use multiple times)\n  --header, -H <header>        Set extra HTTP headers (can use multiple times)\n  --manual, -M                 Open browser for manual login/interaction\n  --debug, -d                  Enable debug output\n  --max-resources, -R <num>    Max number of remote resources to check (default: 5000)\n  --threads-crawl, -tc <num>   Number of concurrent page crawlers (default: 5)\n  --threads-resource, -tr <num>Number of concurrent resource checks (default: 20)\n  --pool-size, -ps <num>       Connection pool size per host (default: 10)\n  --robots, -r                 Honor robots.txt rules when crawling\n  --insecure, -k               Ignore HTTPS certificate errors\n  --restrict-path, -rp <path>  Only crawl URLs starting with this path (can use multiple times)\n  --skip-pattern, -sp <regex>  Skip URLs matching this regex pattern (can use multiple times)\n  --exclude-path, -ep <path>   Skip URLs containing this path (can use multiple times)\n  --user-agent, -ua <string>   Override the default user agent string\n  --help, -h                   Show this help message\n\nNote: For --skip-pattern, regex metacharacters must be escaped (e.g., \\?, \\(, \\))\n`;
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -547,7 +547,7 @@ async function getRobotsRules(baseUrl, page) {
     // Re-launch browser in headless mode for the scan
     browser = await chromium.launch({ headless: true });
     context = await browser.newContext(contextOptions);
-    await context.addCookies(cookies);
+    // await context.addCookies(cookies);
     console.log('[Manual Mode] Scan will continue with your session cookies.');
   } else {
     browser = await chromium.launch({ headless: true });
@@ -758,17 +758,101 @@ async function getRobotsRules(baseUrl, page) {
           });
           
           // Track when scripts finish loading to remove them from the chain
-          scanPage.on('response', response => {
+          scanPage.on('response', async response => {
             const respUrl = response.url();
+            const headers = response.headers();
+            if (flags.debug) {
+              console.log(`[DEBUG][COOKIES] Response for: ${respUrl}`);
+              console.log(`[DEBUG][COOKIES] All headers for ${respUrl}:`, headers);
+            }
+            let setCookieHeaders = headers['set-cookie'];
+            if (flags.debug) {
+              console.log(`[DEBUG][COOKIES] Raw Set-Cookie headers for ${respUrl}:`, setCookieHeaders);
+            }
+            if (setCookieHeaders) {
+              if (!Array.isArray(setCookieHeaders)) setCookieHeaders = [setCookieHeaders];
+              for (const cookieStr of setCookieHeaders) {
+                if (flags.debug) {
+                  console.log(`[DEBUG][COOKIES] Attempting to parse Set-Cookie string: ${cookieStr}`);
+                }
+                const parsed = parseCookieString(cookieStr, startDomain); // Pass startDomain for accurate parsing
+                if (flags.debug) {
+                  console.log(`[DEBUG][COOKIES] Parsed cookie:`, parsed);
+                  console.log(`[DEBUG][COOKIES] Tracking cookie with mainDomain: ${startDomain}`);
+                }
+                // Ensure parsed is an array of cookie objects before tracking
+                if (Array.isArray(parsed)) {
+                  for (const p of parsed) {
+                    trackCookie(p, respUrl, 'header', startDomain);
+                  }
+                } else if (parsed) { // Handle single cookie object returned by parseCookieString
+                  trackCookie(parsed, respUrl, 'header', startDomain);
+                }
+              }
+            } else {
+              if (flags.debug) {
+                console.log(`[DEBUG][COOKIES] No Set-Cookie header found for: ${respUrl}`);
+              }
+            }
             if (response.request().resourceType() === 'script') {
               // Remove the script from current chain when it finishes loading
               currentRequestChain = currentRequestChain.filter(chain => chain.url !== respUrl);
             }
           });
 
+          // Add debug prints for navigation and redirect events
+          scanPage.on('framenavigated', frame => {
+            if (flags.debug) {
+              console.log(`[DEBUG][NAV] Frame navigated: ${frame.url()}`);
+            }
+          });
+          scanPage.on('request', request => {
+            if (flags.debug && request.isNavigationRequest()) {
+              console.log(`[DEBUG][NAV] Navigation request: ${request.url()}`);
+            }
+          });
+
+          // Log all console messages for debugging document.cookie activity
+          scanPage.on('console', msg => {
+            if (flags.debug) {
+              console.log(`[DEBUG][PAGE_CONSOLE] ${msg.type()}: ${msg.text()}`);
+            }
+          });
+
+          // Log response headers for all finished navigation requests
+          scanPage.on('requestfinished', async request => {
+            if (flags.debug && request.isNavigationRequest()) {
+              try {
+                const response = await request.response();
+                if (response) {
+                  const headers = response.headers();
+                  console.log(`[DEBUG][NAV] requestfinished for: ${request.url()}`);
+                  console.log(`[DEBUG][NAV] Headers (JSON):`, JSON.stringify(headers, null, 2));
+                }
+              } catch (e) {
+                console.log(`[DEBUG][NAV] Error getting response for: ${request.url()} - ${e.message}`);
+              }
+            }
+          });
+
           startSpinner('Crawling page...');
           try {
-            await scanPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+            await scanPage.goto(url, { waitUntil: 'domcontentloaded', timeout: flags.timeout });
+
+            // After page load, extract all cookies from the context, including those set by JS
+            const allCookies = await context.cookies(url); // Get cookies for the current URL
+            if (flags.debug) {
+              console.log(`[DEBUG][COOKIES] All cookies in context after navigation to ${url}:`);
+              console.log(JSON.stringify(allCookies, null, 2));
+            }
+
+            // Feed all browser cookies into the trackedCookies map
+            for (const cookie of allCookies) {
+              // The 'setVia' indicates that this was captured from the browser context, not a header
+              trackCookie(cookie, url, 'browser', startDomain);
+            }
+
+            // Wait for dynamic content to load
             await new Promise(resolve => setTimeout(resolve, 2000));
           } catch (error) {
             stopSpinner();
@@ -911,9 +995,9 @@ async function getRobotsRules(baseUrl, page) {
                   // Check for potential takeover
                   if (!r.resolves || (r.httpStatusCode >= 400 && r.httpStatusCode < 500)) {
                     const hostname = extractHostname(r.url);
-                    if (takeoverTargets.has(hostname)) {
+                    if (isTakeoverTarget(hostname)) {
                       r.takeoverVulnerable = true;
-                      r.takeoverService = takeoverTargets.get(hostname);
+                      r.takeoverService = 'Known Takeover Target';
                       potentialTakeovers++;
                     }
                   }
@@ -1010,22 +1094,12 @@ function getPath(url) {
 
 function escapeHtml(text) {
   if (typeof text !== 'string') return '';
-  // Proper HTML encoding - whitelist approach: only allow safe characters
-  return text.replace(REGEX_PATTERNS.HTML_CHAR, function(char) {
-    const code = char.charCodeAt(0);
-    // Allow alphanumeric, space, and basic punctuation
-    if ((code >= 48 && code <= 57) || // 0-9
-        (code >= 65 && code <= 90) || // A-Z
-        (code >= 97 && code <= 122) || // a-z
-        code === 32 || // space
-        code === 44 || // comma
-        code === 46 || // period
-        code === 45 || // hyphen
-        code === 95) { // underscore
-      return char;
-    }
-    return '&#x' + code.toString(16) + ';';
-  });
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function sanitizeUrl(url) {
@@ -1065,27 +1139,27 @@ async function resolveHost(hostname) {
     return false;
   }
   
-  if (flags.debug) console.log(`[DEBUG] resolveHost: Starting DNS lookup for "${hostname}"`);
+  // if (flags.debug) console.log(`[DEBUG] resolveHost: Starting DNS lookup for "${hostname}"`);
   
   try {
     const dnsTimeout = Math.max(REMOTE_TIMEOUT_MS, 10000);
-    if (flags.debug) console.log(`[DEBUG] resolveHost: Using timeout of ${dnsTimeout}ms for "${hostname}"`);
+    // if (flags.debug) console.log(`[DEBUG] resolveHost: Using timeout of ${dnsTimeout}ms for "${hostname}"`);
     
     const result = await withTimeout(new Promise((resolve) => {
-      if (flags.debug) console.log(`[DEBUG] resolveHost: Creating DNS lookup promise for "${hostname}"`);
+      // if (flags.debug) console.log(`[DEBUG] resolveHost: Creating DNS lookup promise for "${hostname}"`);
       
       dns.lookup(hostname, { all: false }, (err, address, family) => {
         if (err) {
           if (flags.debug) console.log(`[DEBUG] resolveHost: DNS lookup failed for "${hostname}": ${err.code} - ${err.message}`);
           resolve(false);
         } else {
-          if (flags.debug) console.log(`[DEBUG] resolveHost: DNS lookup successful for "${hostname}": ${address} (family: ${family})`);
+          // if (flags.debug) console.log(`[DEBUG] resolveHost: DNS lookup successful for "${hostname}": ${address} (family: ${family})`);
           resolve(true);
         }
       });
     }), dnsTimeout);
     
-    if (flags.debug) console.log(`[DEBUG] resolveHost: Final result for "${hostname}": ${result}`);
+    // if (flags.debug) console.log(`[DEBUG] resolveHost: Final result for "${hostname}": ${result}`);
     return result;
   } catch (error) {
     if (flags.debug) console.log(`[DEBUG] resolveHost: DNS timeout/error for "${hostname}": ${error.message}`);
@@ -1210,19 +1284,19 @@ async function getHostCheck(hostname) {
     return hostCheckCache.get(hostname);
   }
   
-  if (flags.debug) console.log(`[DEBUG] getHostCheck: Cache MISS for "${hostname}" -> starting checks...`);
+  // if (flags.debug) console.log(`[DEBUG] getHostCheck: Cache MISS for "${hostname}" -> starting checks...`);
   incResourceRequestOrExit();
   
-  if (flags.debug) console.log(`[DEBUG] getHostCheck: Calling resolveHost for "${hostname}"`);
+  // if (flags.debug) console.log(`[DEBUG] getHostCheck: Calling resolveHost for "${hostname}"`);
   const resolves = await resolveHost(hostname);
-  if (flags.debug) console.log(`[DEBUG] getHostCheck: resolveHost result for "${hostname}": ${resolves}`);
+  // if (flags.debug) console.log(`[DEBUG] getHostCheck: resolveHost result for "${hostname}": ${resolves}`);
   
-  if (flags.debug) console.log(`[DEBUG] getHostCheck: Calling checkTCP for "${hostname}"`);
+  // if (flags.debug) console.log(`[DEBUG] getHostCheck: Calling checkTCP for "${hostname}"`);
   const tcpOk = await checkTCP(hostname);
-  if (flags.debug) console.log(`[DEBUG] getHostCheck: checkTCP result for "${hostname}": ${tcpOk}`);
+  // if (flags.debug) console.log(`[DEBUG] getHostCheck: checkTCP result for "${hostname}": ${tcpOk}`);
   
   const result = { resolves, tcpOk };
-  if (flags.debug) console.log(`[DEBUG] getHostCheck: Final result for "${hostname}": resolves=${resolves}, tcpOk=${tcpOk}`);
+  // if (flags.debug) console.log(`[DEBUG] getHostCheck: Final result for "${hostname}": resolves=${resolves}, tcpOk=${tcpOk}`);
   
   hostCheckCache.set(hostname, result);
   return result;
@@ -1426,6 +1500,7 @@ function writeReportsAndExit() {
    <tr><td class="label">Remote Resources Checked</td><td class="value">${totalRemoteResources}</td></tr>
    <tr><td class="label">Potential Takeovers</td><td class="value"><a href="potential-takeovers.html">${potentialTakeovers}</a></td></tr>
    <tr><td class="label">Console Log</td><td class="value"><a href="console-log.html">View</a></td></tr>
+   <tr><td class="label">Cookies</td><td class="value"><a href="cookies.html">View</a></td></tr>
    </table>`;
 
   // --- Count failure types and unique resources ---
@@ -1455,66 +1530,7 @@ function writeReportsAndExit() {
    <tr><td class="label">Total Unique Resources</td><td class="value"><a href="unique-resources.html">${uniqueChecked}</a></td></tr>
    </table>`;
 
-  // --- Generate subpages ---
-  function writeSubpage(filename, title, rows, columns, total, makeLinks, makeLinksBothCols) {
-    // Sort rows by the first column (Resource URL)
-    rows = rows.slice().sort((a, b) => a[0].localeCompare(b[0]));
-    let subHtml = `<html><head><title>${title} - Dangler Report</title><meta name="referrer" content="no-referrer"><style>
-      body { font-family: sans-serif; margin: 40px; }
-      table { border-collapse: collapse; margin-bottom: 20px; width: 100%; max-width: 100vw; table-layout: fixed; }
-      .halfwidth { width: 100%; min-width: 350px; }
-      td.label { font-weight: bold; text-align: left; width: 40%; background: #f0f0f0; }
-      td.value { text-align: left; }
-      th, td { border: 1px solid #ddd; padding: 8px; word-break: break-all; }
-      th { background: #f0f0f0; }
-      a { color: #0645AD; }
-      small { color: #666; font-size: smaller; }
-    </style></head><body>
-    <h1>The Dangler</h1>
-    <hr>
-    <a href="index.html">&larr; Back to Summary</a>
-    <h2>${title}${typeof total === 'number' ? `: ${total}` : ''}</h2>`;
-    if (rows.length > 0) {
-      subHtml += `<table><tr>`;
-      for (const col of columns) subHtml += `<th>${escapeHtml(col)}</th>`;
-      subHtml += `</tr>`;
-      for (const row of rows) {
-        subHtml += `<tr>`;
-        for (let i = 0; i < row.length; ++i) {
-          let cell = row[i];
-          let isInternal = typeof cell === 'string' && cell.trim().endsWith('.html');
-          if (typeof makeLinks === 'function' && makeLinks(row, i)) {
-            if (isInternal) {
-              subHtml += `<td><a href="${sanitizeUrl(cell)}">${escapeHtml(cell)}</a></td>`;
-            } else {
-              subHtml += `<td><a href="${sanitizeUrl(cell)}" target="_blank">${escapeHtml(cell)}</a></td>`;
-            }
-          } else if (makeLinksBothCols) {
-            if (isInternal) {
-              subHtml += `<td><a href="${sanitizeUrl(cell)}">${escapeHtml(cell)}</a></td>`;
-            } else {
-              subHtml += `<td><a href="${sanitizeUrl(cell)}" target="_blank">${escapeHtml(cell)}</a></td>`;
-            }
-          } else if (makeLinks && i === 0) {
-            if (isInternal) {
-              subHtml += `<td><a href="${sanitizeUrl(cell)}">${escapeHtml(cell)}</a></td>`;
-            } else {
-              subHtml += `<td><a href="${sanitizeUrl(cell)}" target="_blank">${escapeHtml(cell)}</a></td>`;
-            }
-          } else {
-            subHtml += `<td>${escapeHtml(cell)}</td>`;
-          }
-        }
-        subHtml += `</tr>`;
-      }
-      subHtml += `</table>`;
-    } else {
-      subHtml += `<p>No data available for this section.</p>`;
-    }
-    subHtml += `</body></html>`;
-    const outPath = useOutputDir ? `${outputDir}/${filename}` : filename;
-    fs.writeFileSync(outPath, subHtml);
-  }
+ 
 
   // Prepare data for subpages
   const dnsRows = [], connectRows = [], httpRows = [], allRows = [], takeoverRows = [];
@@ -1597,9 +1613,67 @@ function writeReportsAndExit() {
   // Clean up connection pool
   if (flags.debug) {
     const poolStats = connectionPool.getStats();
-    console.log('[DEBUG] Connection pool stats:', JSON.stringify(poolStats, null, 2));
+    console.log('[DEBUG] Connection pool stats:');
+    console.dir(poolStats, { depth: 4, colors: true });
   }
   connectionPool.destroy();
+
+  // --- Cookies Report Page ---
+  const cookieRows = [];
+  if (flags.debug) {
+    console.log(`[DEBUG] Inside writeReportsAndExit: trackedCookies.size before populating cookieRows: ${trackedCookies.size}`);
+  }
+  for (const cookie of trackedCookies.values()) {
+    cookieRows.push([
+      escapeHtml(String(cookie.name)), // No link, just plain text
+      escapeHtml(String(cookie.value)),
+      escapeHtml(String(cookie.domain)),
+      escapeHtml(String(cookie.path)),
+      escapeHtml(String(cookie.source)),
+      escapeHtml(cookie.party),
+      cookie.secure ? 'Yes' : 'No',
+      cookie.httpOnly ? 'Yes' : 'No',
+      escapeHtml(cookie.sameSite || ''),
+      cookie.expires ? new Date(cookie.expires * 1000).toLocaleString() : '',
+      escapeHtml(cookie.setVia),
+      cookie.isParentDomain ? 'Yes' : '',
+      cookie.isThirdParty ? 'Yes' : '',
+      cookie.isSecondParty ? 'Yes' : '',
+      cookie.isFirstParty ? 'Yes' : '',
+      cookie.isLongLived ? 'Yes' : '',
+      cookie.isInsecure ? 'Yes' : '',
+      cookie.isMissingSecure ? 'Yes' : '',
+      cookie.isMissingHttpOnly ? 'Yes' : '',
+      cookie.isSameSiteNoneNoSecure ? 'Yes' : '',
+      cookie.isKnownTracker ? 'Yes' : ''
+    ]);
+  }
+  writeSubpage(
+    'cookies.html',
+    'Cookies Set During Crawl',
+    cookieRows,
+    [
+      'Name', 'Value', 'Domain', 'Path', 'Source', 'Party', 'Secure', 'HttpOnly', 'SameSite', 'Expires', 'Set Via',
+      'Parent Domain', 'Third Party', 'Second Party', 'First Party', 'Long-Lived', 'Insecure', 'Missing Secure', 'Missing HttpOnly', 'SameSite=None w/o Secure', 'Known Tracker'
+    ],
+    cookieRows.length,
+    (row, i) => i === 0 || i === 2 || i === 4 // Linkify domain, source, and name
+  );
+  if (flags.debug) {
+    console.log(`[DEBUG] Writing cookies report page. Total cookies tracked: ${trackedCookies.size}`);
+    if (trackedCookies.size > 0) {
+      const sample = Array.from(trackedCookies.values()).slice(0, 3);
+      console.dir(sample, { depth: null, colors: true });
+    }
+  }
+
+  if (flags.debug) {
+    console.log(`[DEBUG][COOKIES] Crawl complete. Final trackedCookies size: ${trackedCookies.size}`);
+    if (trackedCookies.size > 0) {
+      const sample = Array.from(trackedCookies.values()).slice(0, 3);
+      console.dir(sample, { depth: null, colors: true });
+    }
+  }
 
   process.exit();
 }
@@ -1895,3 +1969,130 @@ async function safeRegexTest(pattern, text, timeoutMs = 100) {
   });
 }
 
+// === Cookie Tracking ===
+const trackedCookies = new Map(); // key: name|domain|path, value: {name, value, domain, path, source, party, secure, httpOnly, sameSite, expires, setVia, isParentDomain, isThirdParty, isSecondParty, isFirstParty, isLongLived, isInsecure, isMissingSecure, isMissingHttpOnly, isSameSiteNoneNoSecure, isKnownTracker}
+
+// Helper to classify party
+function classifyCookieParty(cookieDomain, mainDomain) {
+  if (!cookieDomain) return 'unknown';
+  if (cookieDomain === mainDomain || cookieDomain.endsWith('.' + mainDomain)) return 'first';
+  // Second party: same eTLD but not same domain
+  const getETLD = d => d.split('.').slice(-2).join('.');
+  if (getETLD(cookieDomain) === getETLD(mainDomain)) return 'second';
+  return 'third';
+}
+
+// Helper to check parent domain
+function isParentDomain(cookieDomain, mainDomain) {
+  return cookieDomain && cookieDomain.startsWith('.') && cookieDomain !== '.' + mainDomain;
+}
+
+// Helper to check known trackers (simple list)
+const knownTrackers = ['doubleclick.net', 'google-analytics.com', 'googletagmanager.com', 'facebook.com', 'adnxs.com'];
+function isKnownTrackerDomain(domain) {
+  return knownTrackers.some(tracker => domain && domain.includes(tracker));
+}
+
+// Listen for Set-Cookie headers and JS-set cookies
+function trackCookie(cookie, sourceUrl, setVia, mainDomain) {
+  const key = `${cookie.name}|${cookie.domain}|${cookie.path}`;
+  if (trackedCookies.has(key)) {
+    if (flags.debug) console.log(`[DEBUG] Skipping duplicate cookie: ${key}`);
+    return; // Only track first instance
+  }
+  if (flags.debug) console.log(`[DEBUG] Tracking cookie: ${key} via ${setVia} from ${sourceUrl}`);
+  const party = classifyCookieParty(cookie.domain, mainDomain);
+  const parentDomain = isParentDomain(cookie.domain, mainDomain);
+  const isThirdParty = party === 'third';
+  const isSecondParty = party === 'second';
+  const isFirstParty = party === 'first';
+  const isLongLived = cookie.expires && (cookie.expires * 1000 - Date.now() > 1000 * 60 * 60 * 24 * 365); // >1yr
+  const isInsecure = !cookie.secure && sourceUrl.startsWith('https:');
+  const isMissingSecure = !cookie.secure;
+  const isMissingHttpOnly = !cookie.httpOnly;
+  const isSameSiteNoneNoSecure = cookie.sameSite === 'None' && !cookie.secure;
+  const isKnownTracker = isKnownTrackerDomain(cookie.domain);
+  trackedCookies.set(key, {
+    name: cookie.name,
+    value: cookie.value,
+    domain: cookie.domain,
+    path: cookie.path,
+    source: sourceUrl,
+    party,
+    secure: cookie.secure,
+    httpOnly: cookie.httpOnly,
+    sameSite: cookie.sameSite,
+    expires: cookie.expires,
+    setVia,
+    isParentDomain: parentDomain,
+    isThirdParty,
+    isSecondParty,
+    isFirstParty,
+    isLongLived,
+    isInsecure,
+    isMissingSecure,
+    isMissingHttpOnly,
+    isSameSiteNoneNoSecure,
+    isKnownTracker
+  });
+}
+
+function writeSubpage(filename, title, rows, columns, total, makeLinks, makeLinksBothCols) {
+  // Sort rows by the first column (Resource URL)
+  rows = rows.slice().sort((a, b) => a[0].localeCompare(b[0]));
+  let subHtml = `<html><head><title>${title} - Dangler Report</title><meta name="referrer" content="no-referrer"><style>
+    body { font-family: sans-serif; margin: 40px; }
+    table { border-collapse: collapse; margin-bottom: 20px; width: 100%; max-width: 100vw; table-layout: fixed; }
+    .halfwidth { width: 100%; min-width: 350px; }
+    td.label { font-weight: bold; text-align: left; width: 40%; background: #f0f0f0; }
+    td.value { text-align: left; }
+    th, td { border: 1px solid #ddd; padding: 8px; word-break: break-all; }
+    th { background: #f0f0f0; }
+    a { color: #0645AD; }
+    small { color: #666; font-size: smaller; }
+  </style></head><body>
+  <h1>The Dangler</h1>
+  <hr>
+  <a href="index.html">&larr; Back to Summary</a>
+  <h2>${title}${typeof total === 'number' ? `: ${total}` : ''}</h2>`;
+  if (rows.length > 0) {
+    subHtml += `<table><tr>`;
+    for (const col of columns) subHtml += `<th>${escapeHtml(col)}</th>`;
+    subHtml += `</tr>`;
+    for (const row of rows) {
+      subHtml += `<tr>`;
+      for (let i = 0; i < row.length; ++i) {
+        let cell = row[i];
+        let isInternal = typeof cell === 'string' && cell.trim().endsWith('.html');
+        if (typeof makeLinks === 'function' && makeLinks(row, i)) {
+          if (isInternal) {
+            subHtml += `<td><a href="${sanitizeUrl(cell)}">${escapeHtml(cell)}</a></td>`;
+          } else {
+            subHtml += `<td><a href="${sanitizeUrl(cell)}" target="_blank">${escapeHtml(cell)}</a></td>`;
+          }
+        } else if (makeLinksBothCols) {
+          if (isInternal) {
+            subHtml += `<td><a href="${sanitizeUrl(cell)}">${escapeHtml(cell)}</a></td>`;
+          } else {
+            subHtml += `<td><a href="${sanitizeUrl(cell)}" target="_blank">${escapeHtml(cell)}</a></td>`;
+          }
+        } else if (makeLinks && i === 0) {
+          if (isInternal) {
+            subHtml += `<td><a href="${sanitizeUrl(cell)}">${escapeHtml(cell)}</a></td>`;
+          } else {
+            subHtml += `<td><a href="${sanitizeUrl(cell)}" target="_blank">${escapeHtml(cell)}</a></td>`;
+          }
+        } else {
+          subHtml += `<td>${escapeHtml(cell)}</td>`;
+        }
+      }
+      subHtml += `</tr>`;
+    }
+    subHtml += `</table>`;
+  } else {
+    subHtml += `<p>No data available for this section.</p>`;
+  }
+  subHtml += `</body></html>`;
+  const outPath = useOutputDir ? `${outputDir}/${filename}` : filename;
+  fs.writeFileSync(outPath, subHtml);
+}

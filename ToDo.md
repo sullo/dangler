@@ -1,6 +1,5 @@
 ## To do
 - CSV report/conversion from JSON
-- UA customization
 - Whois lookup
 - Follow meta refresh redirects or JS-based navigation ?
 - Static JS and HTML parsing (currently only network requests)
@@ -16,7 +15,6 @@
 
 ## Efficiency
 - check network timeout length
-- caching browser content? 
 - parallel page loading
 
 ## Questions
@@ -35,7 +33,6 @@
 - postmessage
 - JS report
 - Screenshots
-- cookie usage & set where & types (1st/2nd)
 - malicious JS/domains?
 - copyright outdated/missing
 - file hashing
