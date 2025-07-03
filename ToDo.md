@@ -11,7 +11,6 @@
 - Static parsing/analysis
 
 ## Efficiency
-- check network timeout length
 - parallel page loading
 
 ## Questions
@@ -50,3 +49,6 @@ Test:
 
 # Look at
 - https://www.observepoint.com/
+	- Resource Geo source
+- Site changes
+- Malicous JS

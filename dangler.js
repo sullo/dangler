@@ -263,6 +263,9 @@ let shouldExit = false;
 let exitReason = '';
 let reachedResourceLimit = false;
 
+// === Iframe Tracking ===
+const trackedFrames = [];
+
 // Chain tracking class
 class RequestChain {
   constructor(url, parentChain = null, triggerType = 'initial') {
@@ -855,6 +858,22 @@ async function getRobotsRules(baseUrl, page) {
             // Wait for dynamic content to load
             await new Promise(resolve => setTimeout(resolve, 2000));
 
+            // --- Static and Dynamic Iframe Detection (after all content loaded) ---
+            try {
+              const allFrames = await scanPage.$$eval('iframe', iframes => iframes.map(f => f.src));
+              for (const src of allFrames) {
+                if (src && !trackedFrames.some(f => f.parent === url && f.frameUrl === src)) {
+                  trackedFrames.push({
+                    parent: url,
+                    method: 'HTML',
+                    frameUrl: src
+                  });
+                }
+              }
+            } catch (e) {
+              if (flags.debug) console.log(`[DEBUG][IFRAME] Error detecting static/dynamic iframes: ${e.message}`);
+            }
+
             // --- Meta Refresh Detection ---
             try {
               const metaRefresh = await scanPage.$('meta[http-equiv="refresh" i]');
@@ -879,6 +898,34 @@ async function getRobotsRules(baseUrl, page) {
               }
             } catch (e) {
               if (flags.debug) console.log(`[DEBUG][META REFRESH] Error detecting meta refresh: ${e.message}`);
+            }
+
+            // --- Noscript Iframe Detection ---
+            try {
+              const rawHtml = await scanPage.content();
+              // Find all <noscript>...</noscript> blocks
+              const noscriptMatches = rawHtml.match(/<noscript[\s\S]*?<\/noscript>/gi);
+              if (noscriptMatches) {
+                for (const noscript of noscriptMatches) {
+                  // Find all <iframe ...> inside this noscript
+                  const iframeMatches = noscript.match(/<iframe[^>]+src=["']?([^"'>\s]+)["']?[^>]*>/gi);
+                  if (iframeMatches) {
+                    for (const iframeTag of iframeMatches) {
+                      // Extract src attribute
+                      const srcMatch = iframeTag.match(/src=["']?([^"'>\s]+)["']?/i);
+                      if (srcMatch && srcMatch[1]) {
+                        trackedFrames.push({
+                          parent: url,
+                          method: 'HTML (noscript)',
+                          frameUrl: srcMatch[1]
+                        });
+                      }
+                    }
+                  }
+                }
+              }
+            } catch (e) {
+              if (flags.debug) console.log(`[DEBUG][NOSCRIPT IFRAME] Error detecting noscript iframes: ${e.message}`);
             }
           } catch (error) {
             stopSpinner();
@@ -1513,7 +1560,7 @@ function writeReportsAndExit() {
   <table class="halfwidth">
     <tr><td class="label">Target</td><td class="value"><a href="${sanitizeUrl(flags.url)}" target="_blank">${escapeHtml(flags.url)}</a></td></tr>
     <tr><td class="label">Max Pages</td><td class="value">${escapeHtml(String(flags.maxPages))}</td></tr>
-    <tr><td class="label">CLI Args</td><td class="value">dangler.js ${escapeHtml(process.argv.slice(2).join(' '))}</td></tr>
+    <tr><td class="label">Command Line</td><td class="value">dangler.js ${escapeHtml(process.argv.slice(2).join(' '))}</td></tr>
   </table>`;
 
   // --- Summary Table ---
@@ -1527,6 +1574,7 @@ function writeReportsAndExit() {
    <tr><td class="label">Potential Takeovers</td><td class="value"><a href="potential-takeovers.html">${potentialTakeovers}</a></td></tr>
    <tr><td class="label">Console Log</td><td class="value"><a href="console-log.html">View</a></td></tr>
    <tr><td class="label">Cookies</td><td class="value"><a href="cookies.html">View</a></td></tr>
+   <tr><td class="label">Frames</td><td class="value"><a href="frames.html">${trackedFrames.length} detected</a></td></tr>
    </table>`;
 
   // --- Count failure types and unique resources ---
@@ -1722,16 +1770,29 @@ function writeReportsAndExit() {
     }
   }
   
+  // --- Frames Report Page ---
+  const frameRows = trackedFrames.map(f => [f.parent, f.method, f.frameUrl]);
+  writeSubpage(
+    'frames.html',
+    'Frames Detected During Crawl',
+    frameRows,
+    ['Injected Into Page', 'Method', 'Frame Target URL'],
+    frameRows.length,
+    (row, i) => i === 0 || i === 2, // Linkify parent and frame target
+    false,
+    []
+  );
+  
   process.exit();
 }
 
 // Write console log page
 function writeConsoleLogPage() {
   let subHtml = `<html><head><title>Console Log - Dangler Report</title><meta name="referrer" content="no-referrer"><style>
-    body { font-family: monospace; margin: 40px; background: #1e1e1e; color: #d4d4d4; }
-    pre { background: #2d2d2d; padding: 20px; border-radius: 5px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; }
-    a { color: #569cd6; }
-    h1 { color: #dcdcaa; }
+    body { font-family: sans-serif; margin: 40px; background: #fff; color: #222; }
+    pre { background: #f0f0f0; padding: 20px; border-radius: 5px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; color: #222; }
+    a { color: #0645AD; }
+    h1 { color: #222; }
   </style></head><body>
   <h1>The Dangler</h1>
   <hr>
