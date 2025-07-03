@@ -522,6 +522,14 @@ async function getRobotsRules(baseUrl, page) {
       if (flags.debug) {
         console.log(`[DEBUG][${source.toUpperCase()}][NAV] Frame navigated: ${frame.url()}`);
       }
+      // Track manual top-level navigations
+      if (source === 'manual' && frame.parentFrame() === null) {
+        if (!globalThis.manualVisitedPages) globalThis.manualVisitedPages = [];
+        const navUrl = frame.url();
+        if (navUrl && !globalThis.manualVisitedPages.includes(navUrl)) {
+          globalThis.manualVisitedPages.push(navUrl);
+        }
+      }
     });
     scanPage.on('request', request => {
       if (flags.debug && request.isNavigationRequest()) {
@@ -596,6 +604,8 @@ async function getRobotsRules(baseUrl, page) {
   }
 
   let browser, context;
+  let manualResources = [];
+  let manualFrames = [];
   if (flags.manual) {
     console.log('[Manual Mode] You must come back to this terminal and press ENTER to continue after logging in.');
     console.log('[Manual Mode] Press ENTER now to open the browser window.');
@@ -610,6 +620,47 @@ async function getRobotsRules(baseUrl, page) {
     await new Promise(resolve => process.stdin.once('data', resolve));
     // Extract cookies and storage from manual session
     const cookies = await contextManual.cookies();
+    // Merge manual tracked requests and frames
+    if (globalThis.manualTrackedRequests) {
+      // Group manual requests by their top-level frame URL
+      const manualPageMap = new Map();
+      for (const req of globalThis.manualTrackedRequests) {
+        // Find the closest visited page for this request
+        let pageUrl = req.frameUrl || flags.url;
+        if (globalThis.manualVisitedPages && globalThis.manualVisitedPages.includes(pageUrl)) {
+          // ok
+        } else if (globalThis.manualVisitedPages && globalThis.manualVisitedPages.length > 0) {
+          // fallback: use last visited page
+          pageUrl = globalThis.manualVisitedPages[globalThis.manualVisitedPages.length - 1];
+        }
+        if (!manualPageMap.has(pageUrl)) manualPageMap.set(pageUrl, []);
+        manualPageMap.get(pageUrl).push({
+          url: req.url,
+          domain: (new URL(req.url)).hostname,
+          resourceType: req.resourceType,
+          resolves: undefined,
+          tcpOk: undefined,
+          httpOk: undefined,
+          httpStatusCode: undefined,
+          loadsOtherJS: undefined,
+          chainString: 'Manual',
+          source: 'manual'
+        });
+      }
+      // For each manual page, add to results and allDiscoveredPages
+      for (const [pageUrl, resources] of manualPageMap.entries()) {
+        results.unshift({ page: pageUrl, resources });
+        allDiscoveredPages.add(pageUrl);
+      }
+    }
+    if (globalThis.manualTrackedFrames) {
+      manualFrames = globalThis.manualTrackedFrames.map(f => ({
+        parent: f.parent,
+        method: f.method,
+        frameUrl: f.frameUrl,
+        source: 'manual'
+      }));
+    }
     await browserManual.close();
     // Re-launch browser in headless mode for the scan
     browser = await chromium.launch({ headless: true });
@@ -1633,10 +1684,9 @@ function writeReportsAndExit() {
  
 
   // Prepare data for subpages
-  const dnsRows = [], connectRows = [], httpRows = [], allRows = [], takeoverRows = [];
+  const dnsRows = [], connectRows = [], httpRows = [], takeoverRows = [];
   results.forEach(page => {
     page.resources.forEach(r => {
-      allRows.push([r.url, page.page]);
       if (!r.resolves) {
         dnsRows.push([r.url, extractHostname(r.url), page.page, r.chainString || 'Direct']);
         takeoverRows.push([r.url, extractHostname(r.url), page.page, 'DNS failure', r.chainString || 'Direct']);
@@ -1646,7 +1696,6 @@ function writeReportsAndExit() {
       }
       else if (!r.httpOk) {
         httpRows.push([r.url, page.page, String(r.httpStatusCode)]);
-        // Only include HTTP failures from takeover target domains
         if (isTakeoverTarget(r.domain)) {
           takeoverRows.push([r.url, extractHostname(r.url), page.page, `HTTP ${r.httpStatusCode}`, r.chainString || 'Direct']);
         }
@@ -1658,7 +1707,6 @@ function writeReportsAndExit() {
   writeSubpage('connect-failures.html', 'Connect Failures', connectRows, ['Resource URL', 'Hostname', 'Parent Page', 'Dependency Chain'], connectRows.length, (row, i) => i === 0 || i === 2);
   writeSubpage('http-failures.html', 'HTTP Failures', httpRows, ['Resource URL', 'Parent Page', 'HTTP Status'], httpRows.length, (row, i) => i === 0 || i === 1);
   writeSubpage('potential-takeovers.html', 'Potential Takeovers', takeoverRows, ['Resource URL', 'Hostname', 'Parent Page', 'Failure Type', 'Dependency Chain'], takeoverRows.length, (row, i) => i === 0 || i === 1 || i === 2);
-  writeSubpage('all-resources.html', 'All Resources Checked', allRows, ['Resource URL', 'Parent Page'], allRows.length, false, true);
   writeSubpage('unique-resources.html', 'Unique Resources Checked', uniqueRows, ['Resource URL'], uniqueRows.length, true);
   
   // Create dependency chains page
@@ -1797,17 +1845,26 @@ function writeReportsAndExit() {
   }
   
   // --- Frames Report Page ---
-  const frameRows = trackedFrames.map(f => [f.parent, f.method, f.frameUrl]);
+  const frameRows = trackedFrames.map(f => [f.parent, f.method, f.frameUrl, f.source || 'automated']);
   writeSubpage(
     'frames.html',
     'Frames Detected During Crawl',
     frameRows,
-    ['Injected Into Page', 'Method', 'Frame Target URL'],
+    ['Injected Into Page', 'Method', 'Frame Target URL', 'Source'],
     frameRows.length,
     (row, i) => i === 0 || i === 2, // Linkify parent and frame target
     false,
     []
   );
+  
+  // --- All Resources Report Page ---
+  const allRows = [];
+  results.forEach(page => {
+    page.resources.forEach(r => {
+      allRows.push([r.url, page.page, r.source || (page.page === 'Manual Session' ? 'manual' : 'automated')]);
+    });
+  });
+  writeSubpage('all-resources.html', 'All Resources Checked', allRows, ['Resource URL', 'Parent Page', 'Source'], allRows.length, false, true);
   
   process.exit();
 }
