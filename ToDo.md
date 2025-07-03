@@ -1,54 +1,61 @@
-## To do
-- CSV/export report
-- JSON reports to match all HTML
-- Whois lookup
+## Security Checks
+- malicious JS/domains
+- postmessage/risky js (eval, etc.)
+- Outdated JS
+
+## Coverage Gaps
 - Static JS and HTML parsing (currently only network requests)
 - DOM parsing
 - Handle infinite scroll / load-more patterns (optional)
-- retry flag (0 default)
+- Static parsing/analysis
+- manual browsing
+- Use browser devtools protocol to trace call stacks for resource loads, or instrument JS to log resource creation
+- Statically Referenced but Not Loaded, or dynamically loaded but not triggered
+- DOM-Only or Inert Content
+- Commented code (static analysis catches?)
+- Shadow DOM: Traverse Shadow DOM, templates, and custom elements after page load.
+- Workers which load resources
+- Different browser features/UA
+- Simulate clicks, scrolls, and other interactions to trigger more resource loads.
+
+## Data Points
+- geolocaiton for resources
+- forms: logins, captcha
+- Whois lookup
+- captcha use
+- copyright outdated/missing
+- comments
+- JS used (like Builtwith) and versions
+
+## Features
+- Database
+- CSV/export report
+- JSON reports to match all HTML
 - sortable tables
 - filterable tables
-- Static parsing/analysis
 
 ## Efficiency
 - parallel page loading
 
 ## Questions
 - cloudflare cgi for bot detection?
-- Log if external JS attempts to inject iframes or new script tags
 
 ## Productize
 - login
 - credit system
 - SSRF protection
+- Track site changes (hashing)
 
-## Recon/asm:
-- captcha use
-- forms (email/other/contact)
-- comments
-- postmessage
-- JS report
-- Screenshots
-- malicious JS/domains?
-- copyright outdated/missing
-- file hashing
-
-## AI
+## AI Potential
 - analyze comments and provide summary
-- analyze results
+- analyze potential takeoverse
 - JS versioning
 
-Test:
-- tracking pixels
-	- facebook
-	- ?
-- tracking code
-	- facebook
-	- google analytics
+## Testing
+- tracking pixel from major sources: facebook, google, etc.
+- tracking code is registered properly
+- Browser block list as source?
 
-
-# Look at
+# Comparison/Competitors
 - https://www.observepoint.com/
-	- Resource Geo source
-- Site changes
-- Malicous JS
+
