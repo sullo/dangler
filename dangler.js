@@ -542,7 +542,7 @@ async function getRobotsRules(baseUrl, page) {
           if (response) {
             const headers = response.headers();
             console.log(`[DEBUG][${source.toUpperCase()}][NAV] requestfinished for: ${request.url()}`);
-            console.log(`[DEBUG][${source.toUpperCase()}][NAV] Headers (JSON):`, JSON.stringify(headers, null, 2));
+            // console.log(`[DEBUG][${source.toUpperCase()}][NAV] Headers (JSON):`, JSON.stringify(headers, null, 2));
           }
         } catch (e) {
           console.log(`[DEBUG][${source.toUpperCase()}][NAV] Error getting response for: ${request.url()} - ${e.message}`);
@@ -874,10 +874,10 @@ async function getRobotsRules(baseUrl, page) {
 
             // After page load, extract all cookies from the context, including those set by JS
             const allCookies = await context.cookies(url); // Get cookies for the current URL
-            if (flags.debug) {
-              console.log(`[DEBUG][COOKIES] All cookies in context after navigation to ${url}:`);
-              console.log(JSON.stringify(allCookies, null, 2));
-            }
+            // if (flags.debug) {
+            //   console.log(`[DEBUG][COOKIES] All cookies in context after navigation to ${url}:`);
+            //   console.log(JSON.stringify(allCookies, null, 2));
+            // }
 
             // Feed all browser cookies into the trackedCookies map
             for (const cookie of allCookies) {
@@ -1236,38 +1236,34 @@ async function withTimeout(promise, ms) {
   ]);
 }
 
-async function resolveHost(hostname) {
+async function resolveHost(hostname, maxRetries = 3, delayMs = 250) {
   if (!hostname) {
     if (flags.debug) console.log('[DEBUG] resolveHost: Empty hostname provided');
     return false;
   }
-  
-  // if (flags.debug) console.log(`[DEBUG] resolveHost: Starting DNS lookup for "${hostname}"`);
-  
-  try {
-    const dnsTimeout = Math.max(REMOTE_TIMEOUT_MS, 10000);
-    // if (flags.debug) console.log(`[DEBUG] resolveHost: Using timeout of ${dnsTimeout}ms for "${hostname}"`);
-    
-    const result = await withTimeout(new Promise((resolve) => {
-      // if (flags.debug) console.log(`[DEBUG] resolveHost: Creating DNS lookup promise for "${hostname}"`);
-      
-      dns.lookup(hostname, { all: false }, (err, address, family) => {
-        if (err) {
-          if (flags.debug) console.log(`[DEBUG] resolveHost: DNS lookup failed for "${hostname}": ${err.code} - ${err.message}`);
-          resolve(false);
-        } else {
-          // if (flags.debug) console.log(`[DEBUG] resolveHost: DNS lookup successful for "${hostname}": ${address} (family: ${family})`);
-          resolve(true);
-        }
-      });
-    }), dnsTimeout);
-    
-    // if (flags.debug) console.log(`[DEBUG] resolveHost: Final result for "${hostname}": ${result}`);
-    return result;
-  } catch (error) {
-    if (flags.debug) console.log(`[DEBUG] resolveHost: DNS timeout/error for "${hostname}": ${error.message}`);
-    return false;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const dnsTimeout = Math.max(REMOTE_TIMEOUT_MS, 10000);
+      const result = await withTimeout(new Promise((resolve) => {
+        dns.lookup(hostname, { all: false }, (err, address, family) => {
+          if (err) {
+            if (flags.debug) console.log(`[DEBUG] resolveHost: DNS lookup failed for "${hostname}" (attempt ${attempt}): ${err.code} - ${err.message}`);
+            resolve(false);
+          } else {
+            resolve(true);
+          }
+        });
+      }), dnsTimeout);
+      if (result) return true;
+    } catch (error) {
+      if (flags.debug) console.log(`[DEBUG] resolveHost: DNS timeout/error for "${hostname}" (attempt ${attempt}): ${error.message}`);
+    }
+    if (attempt < maxRetries) {
+      await new Promise(res => setTimeout(res, delayMs));
+    }
   }
+  return false;
 }
 
 async function checkTCP(hostname) {
