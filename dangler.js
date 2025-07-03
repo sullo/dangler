@@ -515,6 +515,69 @@ async function getRobotsRules(baseUrl, page) {
   return rules;
 }
 
+   // === Tracking Setup ===
+   function setupTracking(scanPage, context, url, source) {
+    // Add debug prints for navigation and redirect events
+    scanPage.on('framenavigated', frame => {
+      if (flags.debug) {
+        console.log(`[DEBUG][${source.toUpperCase()}][NAV] Frame navigated: ${frame.url()}`);
+      }
+    });
+    scanPage.on('request', request => {
+      if (flags.debug && request.isNavigationRequest()) {
+        console.log(`[DEBUG][${source.toUpperCase()}][NAV] Navigation request: ${request.url()}`);
+      }
+    });
+    // Log all console messages for debugging document.cookie activity
+    scanPage.on('console', msg => {
+      if (flags.debug) {
+        console.log(`[DEBUG][${source.toUpperCase()}][PAGE_CONSOLE] ${msg.type()}: ${msg.text()}`);
+      }
+    });
+    // Log response headers for all finished navigation requests
+    scanPage.on('requestfinished', async request => {
+      if (flags.debug && request.isNavigationRequest()) {
+        try {
+          const response = await request.response();
+          if (response) {
+            const headers = response.headers();
+            console.log(`[DEBUG][${source.toUpperCase()}][NAV] requestfinished for: ${request.url()}`);
+            console.log(`[DEBUG][${source.toUpperCase()}][NAV] Headers (JSON):`, JSON.stringify(headers, null, 2));
+          }
+        } catch (e) {
+          console.log(`[DEBUG][${source.toUpperCase()}][NAV] Error getting response for: ${request.url()} - ${e.message}`);
+        }
+      }
+    });
+    // Track network requests for manual mode
+    scanPage.on('request', request => {
+      if (source === 'manual') {
+        if (!globalThis.manualTrackedRequests) globalThis.manualTrackedRequests = [];
+        globalThis.manualTrackedRequests.push({
+          url: request.url(),
+          method: request.method(),
+          resourceType: request.resourceType(),
+          frameUrl: request.frame() ? request.frame().url() : '',
+          timestamp: Date.now(),
+          source: 'manual'
+        });
+      }
+    });
+    // Track frame/iframe events for manual mode
+    scanPage.on('frameattached', frame => {
+      if (source === 'manual') {
+        if (!globalThis.manualTrackedFrames) globalThis.manualTrackedFrames = [];
+        globalThis.manualTrackedFrames.push({
+          parent: url,
+          method: 'manual',
+          frameUrl: frame.url(),
+          timestamp: Date.now(),
+          source: 'manual'
+        });
+      }
+    });
+  }
+
 // === MAIN ===
 (async () => {
   console.log(`The Dangler: Starting audit on ${flags.url}`);
@@ -540,6 +603,7 @@ async function getRobotsRules(baseUrl, page) {
     const browserManual = await chromium.launch({ headless: false });
     const contextManual = await browserManual.newContext(contextOptions);
     const pageManual = await contextManual.newPage();
+    setupTracking(pageManual, contextManual, flags.url, 'manual');
     console.log('[Manual Mode] Please log in or interact with the browser window.');
     await pageManual.goto(flags.url);
     console.log('[Manual Mode] When finished, press ENTER in this terminal to continue. Do NOT close the browser window yourself.');
@@ -656,43 +720,7 @@ async function getRobotsRules(baseUrl, page) {
     const visitedPages = new Set();
     allDiscoveredPages.add(flags.url);
 
-    // === Tracking Setup ===
-    function setupTracking(scanPage, context, url) {
-      // Add debug prints for navigation and redirect events
-      scanPage.on('framenavigated', frame => {
-        if (flags.debug) {
-          console.log(`[DEBUG][NAV] Frame navigated: ${frame.url()}`);
-        }
-      });
-      scanPage.on('request', request => {
-        if (flags.debug && request.isNavigationRequest()) {
-          console.log(`[DEBUG][NAV] Navigation request: ${request.url()}`);
-        }
-      });
-      // Log all console messages for debugging document.cookie activity
-      scanPage.on('console', msg => {
-        if (flags.debug) {
-          console.log(`[DEBUG][PAGE_CONSOLE] ${msg.type()}: ${msg.text()}`);
-        }
-      });
-      // Log response headers for all finished navigation requests
-      scanPage.on('requestfinished', async request => {
-        if (flags.debug && request.isNavigationRequest()) {
-          try {
-            const response = await request.response();
-            if (response) {
-              const headers = response.headers();
-              console.log(`[DEBUG][NAV] requestfinished for: ${request.url()}`);
-              console.log(`[DEBUG][NAV] Headers (JSON):`, JSON.stringify(headers, null, 2));
-            }
-          } catch (e) {
-            console.log(`[DEBUG][NAV] Error getting response for: ${request.url()} - ${e.message}`);
-          }
-        }
-      });
-    }
-
-    // Crawl worker function
+     // Crawl worker function
     async function crawlWorker() {
       if (flags.debug) {
         console.log(`[DEBUG] Crawl worker starting`);
@@ -747,7 +775,7 @@ async function getRobotsRules(baseUrl, page) {
           let uniqueUrls = new Set();
 
           const scanPage = await context.newPage();
-          setupTracking(scanPage, context, url);
+          setupTracking(scanPage, context, url, 'automated');
           
           // Track the current page as the root of the chain
           const pageChain = new RequestChain(url, null, 'page');
