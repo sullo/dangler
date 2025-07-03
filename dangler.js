@@ -1624,41 +1624,62 @@ function writeReportsAndExit() {
     console.log(`[DEBUG] Inside writeReportsAndExit: trackedCookies.size before populating cookieRows: ${trackedCookies.size}`);
   }
   for (const cookie of trackedCookies.values()) {
+    const greenCheck = '<span style="color:green;font-size:1.2em;font-weight:bold;">&#10003;</span>';
+    const redX = '<span style="color:red;font-size:1.2em;font-weight:bold;">&#10007;</span>';
+    let secureCell = '';
+    if (cookie.secure) {
+      secureCell = greenCheck;
+    } else if (!cookie.secure && cookie.source && cookie.source.startsWith('https:')) {
+      secureCell = redX;
+    }
     cookieRows.push([
-      escapeHtml(String(cookie.name)), // No link, just plain text
-      escapeHtml(String(cookie.value)),
+      escapeHtml(String(cookie.name)),
+      withHoverDecoded(cookie.value),
       escapeHtml(String(cookie.domain)),
       escapeHtml(String(cookie.path)),
       escapeHtml(String(cookie.source)),
       escapeHtml(cookie.party),
-      cookie.secure ? 'Yes' : 'No',
-      cookie.httpOnly ? 'Yes' : 'No',
+      secureCell, // Secure
+      cookie.httpOnly ? greenCheck : '',
       escapeHtml(cookie.sameSite || ''),
-      cookie.expires ? new Date(cookie.expires * 1000).toLocaleString() : '',
+      (cookie.expires === -1 ? 'End of session' : (cookie.expires ? new Date(cookie.expires * 1000).toLocaleString() : '')),
       escapeHtml(cookie.setVia),
-      cookie.isParentDomain ? 'Yes' : '',
-      cookie.isThirdParty ? 'Yes' : '',
-      cookie.isSecondParty ? 'Yes' : '',
-      cookie.isFirstParty ? 'Yes' : '',
-      cookie.isLongLived ? 'Yes' : '',
-      cookie.isInsecure ? 'Yes' : '',
-      cookie.isMissingSecure ? 'Yes' : '',
-      cookie.isMissingHttpOnly ? 'Yes' : '',
-      cookie.isSameSiteNoneNoSecure ? 'Yes' : '',
-      cookie.isKnownTracker ? 'Yes' : ''
+      cookie.isParentDomain ? greenCheck : '',
+      cookie.isLongLived ? greenCheck : '',
+      cookie.isKnownTracker ? greenCheck : ''
     ]);
   }
+  
+// Cookie report columns:
+// 0 - Name
+// 1 - Value
+// 2 - Domain
+// 3 - Path
+// 4 - Source
+// 5 - Party
+// 6 - Secure
+// 7 - HttpOnly
+// 8 - SameSite
+// 9 - Expires
+// 10 - Set Via
+// 11 - Parent Domain
+// 12 - Long Lived
+// 13 - Known Tracker
+
   writeSubpage(
     'cookies.html',
     'Cookies Set During Crawl',
     cookieRows,
     [
-      'Name', 'Value', 'Domain', 'Path', 'Source', 'Party', 'Secure', 'HttpOnly', 'SameSite', 'Expires', 'Set Via',
-      'Parent Domain', 'Third Party', 'Second Party', 'First Party', 'Long-Lived', 'Insecure', 'Missing Secure', 'Missing HttpOnly', 'SameSite=None w/o Secure', 'Known Tracker'
+      'Name', 'Value', 'Domain', 'Path', 'Source', 'Party', 'Secure', 'HttpOnly', 'SameSite', 'Expires', 'Set<br>Via',
+      'Parent<br>Domain', 'Long<br>Lived', 'Known<br>Tracker'
     ],
     cookieRows.length,
-    (row, i) => i === 0 || i === 2 || i === 4 // Linkify domain, source, and name
+    (row, i) => i === 0 || i === 4, // Linkify only name and source, not domain
+    false,
+    [1, 6, 7, 11, 12, 13] // Allow raw HTML (greenCheck) in these columns
   );
+  
   if (flags.debug) {
     console.log(`[DEBUG] Writing cookies report page. Total cookies tracked: ${trackedCookies.size}`);
     if (trackedCookies.size > 0) {
@@ -1666,7 +1687,7 @@ function writeReportsAndExit() {
       console.dir(sample, { depth: null, colors: true });
     }
   }
-
+  
   if (flags.debug) {
     console.log(`[DEBUG][COOKIES] Crawl complete. Final trackedCookies size: ${trackedCookies.size}`);
     if (trackedCookies.size > 0) {
@@ -1674,7 +1695,7 @@ function writeReportsAndExit() {
       console.dir(sample, { depth: null, colors: true });
     }
   }
-
+  
   process.exit();
 }
 
@@ -2037,7 +2058,7 @@ function trackCookie(cookie, sourceUrl, setVia, mainDomain) {
   });
 }
 
-function writeSubpage(filename, title, rows, columns, total, makeLinks, makeLinksBothCols) {
+function writeSubpage(filename, title, rows, columns, total, makeLinks, makeLinksBothCols, columnsToAllowHtml = []) {
   // Sort rows by the first column (Resource URL)
   rows = rows.slice().sort((a, b) => a[0].localeCompare(b[0]));
   let subHtml = `<html><head><title>${title} - Dangler Report</title><meta name="referrer" content="no-referrer"><style>
@@ -2050,49 +2071,152 @@ function writeSubpage(filename, title, rows, columns, total, makeLinks, makeLink
     th { background: #f0f0f0; }
     a { color: #0645AD; }
     small { color: #666; font-size: smaller; }
-  </style></head><body>
+  </style>`;
+  // Inject hover tooltip CSS/JS for cookies.html
+  if (filename === 'cookies.html') {
+    subHtml += `
+    <style>
+      .hover-tooltip {
+        position: relative;
+        cursor: pointer;
+      }
+      .hover-tooltip .tooltip-box {
+        display: none;
+        position: absolute;
+        z-index: 1000;
+        background: #222;
+        color: #fff;
+        padding: 6px 12px;
+        border-radius: 4px;
+        font-size: 0.95em;
+        white-space: pre-wrap;
+        max-width: 400px;
+        left: 0;
+        top: 120%;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+      }
+      .hover-tooltip:hover .tooltip-box {
+        display: block;
+      }
+    </style>
+    <script>
+      document.addEventListener('DOMContentLoaded', function() {
+        document.querySelectorAll('.hover-tooltip').forEach(function(el) {
+          el.addEventListener('mouseenter', function(e) {
+            let tooltip = el.querySelector('.tooltip-box');
+            if (!tooltip) {
+              tooltip = document.createElement('div');
+              tooltip.className = 'tooltip-box';
+              tooltip.textContent = el.getAttribute('data-hover-decoded');
+              el.appendChild(tooltip);
+            }
+            tooltip.style.display = 'block';
+          });
+          el.addEventListener('mouseleave', function(e) {
+            let tooltip = el.querySelector('.tooltip-box');
+            if (tooltip) tooltip.style.display = 'none';
+          });
+        });
+      });
+    </script>`;
+  }
+  subHtml += `</head><body>
   <h1>The Dangler</h1>
   <hr>
   <a href="index.html">&larr; Back to Summary</a>
   <h2>${title}${typeof total === 'number' ? `: ${total}` : ''}</h2>`;
+
   if (rows.length > 0) {
-    subHtml += `<table><tr>`;
-    for (const col of columns) subHtml += `<th>${escapeHtml(col)}</th>`;
+    // Add colgroup for cookies.html to set specific column widths
+    if (filename === 'cookies.html') {
+      subHtml += `<table style="table-layout:fixed;width:100%;"><colgroup>
+        <col style="width:170px;">
+        <col style="width:250px;">
+        <col style="width:170px;">
+        <col>
+        <col style="width:220px;">
+        <col>
+        <col>
+        <col>
+        <col>
+        <col>
+        <col>
+        <col>
+        <col>
+      </colgroup>`;
+    } else {
+      subHtml += `<table>`;
+    }
+    subHtml += `<tr>`;
+    for (const col of columns) subHtml += `<th>${typeof col === 'string' ? col.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/&lt;br&gt;/g, '<br>') : escapeHtml(col)}</th>`;
     subHtml += `</tr>`;
     for (const row of rows) {
       subHtml += `<tr>`;
       for (let i = 0; i < row.length; ++i) {
         let cell = row[i];
-        let isInternal = typeof cell === 'string' && cell.trim().endsWith('.html');
-        if (typeof makeLinks === 'function' && makeLinks(row, i)) {
+        // For the Secure column (index 6), allow raw HTML
+        if (i === 6 && title.startsWith('Cookies Set During Crawl')) {
+          subHtml += `<td style="text-align:center;vertical-align:middle;">${cell}</td>`;
+        } else if (filename === 'cookies.html' && i === 0) {
+          // Name column: plain text, no link
+          subHtml += `<td>${escapeHtml(cell)}</td>`;
+        } else if (typeof makeLinks === 'function' && makeLinks(row, i)) {
+          let isInternal = typeof cell === 'string' && cell.trim().endsWith('.html');
           if (isInternal) {
             subHtml += `<td><a href="${sanitizeUrl(cell)}">${escapeHtml(cell)}</a></td>`;
           } else {
             subHtml += `<td><a href="${sanitizeUrl(cell)}" target="_blank">${escapeHtml(cell)}</a></td>`;
           }
         } else if (makeLinksBothCols) {
+          let isInternal = typeof cell === 'string' && cell.trim().endsWith('.html');
           if (isInternal) {
             subHtml += `<td><a href="${sanitizeUrl(cell)}">${escapeHtml(cell)}</a></td>`;
           } else {
             subHtml += `<td><a href="${sanitizeUrl(cell)}" target="_blank">${escapeHtml(cell)}</a></td>`;
           }
         } else if (makeLinks && i === 0) {
+          let isInternal = typeof cell === 'string' && cell.trim().endsWith('.html');
           if (isInternal) {
             subHtml += `<td><a href="${sanitizeUrl(cell)}">${escapeHtml(cell)}</a></td>`;
           } else {
             subHtml += `<td><a href="${sanitizeUrl(cell)}" target="_blank">${escapeHtml(cell)}</a></td>`;
           }
+        } else if (columnsToAllowHtml.includes(i)) {
+          subHtml += `<td>${cell}</td>`;
         } else {
           subHtml += `<td>${escapeHtml(cell)}</td>`;
         }
       }
-      subHtml += `</tr>`;
+      subHtml += `</tr>\n`;
     }
     subHtml += `</table>`;
   } else {
     subHtml += `<p>No data available for this section.</p>`;
   }
+
   subHtml += `</body></html>`;
   const outPath = useOutputDir ? `${outputDir}/${filename}` : filename;
   fs.writeFileSync(outPath, subHtml);
+}
+
+// Helper to safely escape HTML for tooltips
+function escapeTooltip(text) {
+  if (typeof text !== 'string') return '';
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// Helper to wrap a value with a span for hover tooltip (URL-decoded, XSS-safe)
+function withHoverDecoded(value) {
+  let decoded = '';
+  try {
+    decoded = decodeURIComponent(value);
+  } catch (e) {
+    decoded = value;
+  }
+  return `<span class="hover-tooltip" data-hover-decoded="${escapeTooltip(decoded)}">${escapeHtml(value)}</span>`;
 }

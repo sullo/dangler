@@ -7,8 +7,6 @@
 - Handle infinite scroll / load-more patterns (optional)
 - cli timeout controls for resource checks
 - retry flag (0 default)
-- 2nd party cookies
-- add type to tables
 - sortable tables
 - filterable tables
 - Static parsing/analysis
