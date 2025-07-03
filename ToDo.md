@@ -2,6 +2,7 @@
 - malicious JS/domains
 - postmessage/risky js (eval, etc.)
 - Outdated JS
+- Exposed API keys
 
 ## Coverage Gaps
 - Static JS and HTML parsing (currently only network requests)
@@ -45,6 +46,8 @@
 - credit system
 - SSRF protection
 - Track site changes (hashing)
+- Code rules for security: https://github.com/wiz-sec-public/secure-rules-files/tree/main/javascript/node.js
+- Code rules for security: https://github.com/matank001/cursor-security-rules/blob/main/secure-dev-node.mdc
 
 ## AI Potential
 - analyze comments and provide summary

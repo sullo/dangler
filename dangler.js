@@ -656,6 +656,42 @@ async function getRobotsRules(baseUrl, page) {
     const visitedPages = new Set();
     allDiscoveredPages.add(flags.url);
 
+    // === Tracking Setup ===
+    function setupTracking(scanPage, context, url) {
+      // Add debug prints for navigation and redirect events
+      scanPage.on('framenavigated', frame => {
+        if (flags.debug) {
+          console.log(`[DEBUG][NAV] Frame navigated: ${frame.url()}`);
+        }
+      });
+      scanPage.on('request', request => {
+        if (flags.debug && request.isNavigationRequest()) {
+          console.log(`[DEBUG][NAV] Navigation request: ${request.url()}`);
+        }
+      });
+      // Log all console messages for debugging document.cookie activity
+      scanPage.on('console', msg => {
+        if (flags.debug) {
+          console.log(`[DEBUG][PAGE_CONSOLE] ${msg.type()}: ${msg.text()}`);
+        }
+      });
+      // Log response headers for all finished navigation requests
+      scanPage.on('requestfinished', async request => {
+        if (flags.debug && request.isNavigationRequest()) {
+          try {
+            const response = await request.response();
+            if (response) {
+              const headers = response.headers();
+              console.log(`[DEBUG][NAV] requestfinished for: ${request.url()}`);
+              console.log(`[DEBUG][NAV] Headers (JSON):`, JSON.stringify(headers, null, 2));
+            }
+          } catch (e) {
+            console.log(`[DEBUG][NAV] Error getting response for: ${request.url()} - ${e.message}`);
+          }
+        }
+      });
+    }
+
     // Crawl worker function
     async function crawlWorker() {
       if (flags.debug) {
@@ -711,6 +747,7 @@ async function getRobotsRules(baseUrl, page) {
           let uniqueUrls = new Set();
 
           const scanPage = await context.newPage();
+          setupTracking(scanPage, context, url);
           
           // Track the current page as the root of the chain
           const pageChain = new RequestChain(url, null, 'page');
@@ -800,41 +837,6 @@ async function getRobotsRules(baseUrl, page) {
             if (response.request().resourceType() === 'script') {
               // Remove the script from current chain when it finishes loading
               currentRequestChain = currentRequestChain.filter(chain => chain.url !== respUrl);
-            }
-          });
-
-          // Add debug prints for navigation and redirect events
-          scanPage.on('framenavigated', frame => {
-            if (flags.debug) {
-              console.log(`[DEBUG][NAV] Frame navigated: ${frame.url()}`);
-            }
-          });
-          scanPage.on('request', request => {
-            if (flags.debug && request.isNavigationRequest()) {
-              console.log(`[DEBUG][NAV] Navigation request: ${request.url()}`);
-            }
-          });
-
-          // Log all console messages for debugging document.cookie activity
-          scanPage.on('console', msg => {
-            if (flags.debug) {
-              console.log(`[DEBUG][PAGE_CONSOLE] ${msg.type()}: ${msg.text()}`);
-            }
-          });
-
-          // Log response headers for all finished navigation requests
-          scanPage.on('requestfinished', async request => {
-            if (flags.debug && request.isNavigationRequest()) {
-              try {
-                const response = await request.response();
-                if (response) {
-                  const headers = response.headers();
-                  console.log(`[DEBUG][NAV] requestfinished for: ${request.url()}`);
-                  console.log(`[DEBUG][NAV] Headers (JSON):`, JSON.stringify(headers, null, 2));
-                }
-              } catch (e) {
-                console.log(`[DEBUG][NAV] Error getting response for: ${request.url()} - ${e.message}`);
-              }
             }
           });
 
