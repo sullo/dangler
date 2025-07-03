@@ -638,17 +638,32 @@ async function getRobotsRules(baseUrl, page) {
           url: req.url,
           domain: (new URL(req.url)).hostname,
           resourceType: req.resourceType,
-          resolves: undefined,
-          tcpOk: undefined,
-          httpOk: undefined,
-          httpStatusCode: undefined,
-          loadsOtherJS: undefined,
           chainString: 'Manual',
           source: 'manual'
         });
       }
-      // For each manual page, add to results and allDiscoveredPages
+      // For each manual page, validate resources and add to results and allDiscoveredPages
       for (const [pageUrl, resources] of manualPageMap.entries()) {
+        // Validate each resource (DNS, TCP, HTTP)
+        await asyncPool(flags.threadsResource, resources, async (r) => {
+          const hostCheck = await getHostCheck(r.domain);
+          r.resolves = hostCheck.resolves;
+          r.tcpOk = hostCheck.tcpOk;
+          let urlCheck = null;
+          if (r.resolves) {
+            urlCheck = await getUrlCheck(r.url);
+            r.httpOk = urlCheck.httpOk;
+            r.httpStatusCode = urlCheck.httpStatusCode;
+            r.loadsOtherJS = urlCheck.loadsOtherJS;
+            r.takeoverVulnerable = urlCheck.takeoverVulnerable;
+            r.takeoverService = urlCheck.takeoverService;
+            r.takeoverReason = urlCheck.takeoverReason;
+          } else {
+            r.httpOk = false;
+            r.httpStatusCode = 0;
+            r.loadsOtherJS = false;
+          }
+        });
         results.unshift({ page: pageUrl, resources });
         allDiscoveredPages.add(pageUrl);
       }
