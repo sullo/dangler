@@ -854,6 +854,32 @@ async function getRobotsRules(baseUrl, page) {
 
             // Wait for dynamic content to load
             await new Promise(resolve => setTimeout(resolve, 2000));
+
+            // --- Meta Refresh Detection ---
+            try {
+              const metaRefresh = await scanPage.$('meta[http-equiv="refresh" i]');
+              if (metaRefresh) {
+                const content = await metaRefresh.getAttribute('content');
+                if (content) {
+                  // Format: "5; url=https://example.com/" or "0;URL='/foo'"
+                  const match = content.match(/url\s*=\s*['"]?([^'";]+)['"]?/i);
+                  if (match && match[1]) {
+                    let refreshUrl = match[1].trim();
+                    // If relative, resolve against current page
+                    try {
+                      refreshUrl = (new URL(refreshUrl, url)).href;
+                    } catch {}
+                    if (!visitedPages.has(refreshUrl) && !queue.includes(refreshUrl)) {
+                      queue.push(refreshUrl);
+                      allDiscoveredPages.add(refreshUrl);
+                      if (flags.debug) console.log(`[DEBUG][META REFRESH] Added meta refresh URL to queue: ${refreshUrl}`);
+                    }
+                  }
+                }
+              }
+            } catch (e) {
+              if (flags.debug) console.log(`[DEBUG][META REFRESH] Error detecting meta refresh: ${e.message}`);
+            }
           } catch (error) {
             stopSpinner();
             if (error.message.includes('ERR_CERT_') || error.message.includes('CERT_')) {

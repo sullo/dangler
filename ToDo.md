@@ -1,11 +1,10 @@
 ## To do
-- CSV report/conversion from JSON
+- CSV/export report
+- JSON reports to match all HTML
 - Whois lookup
-- Follow meta refresh redirects or JS-based navigation ?
 - Static JS and HTML parsing (currently only network requests)
 - DOM parsing
 - Handle infinite scroll / load-more patterns (optional)
-- cli timeout controls for resource checks
 - retry flag (0 default)
 - sortable tables
 - filterable tables
