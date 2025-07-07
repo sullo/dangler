@@ -5,11 +5,9 @@
 - Exposed API keys
 
 ## Coverage Gaps
-- Static JS and HTML parsing (currently only network requests)
+- Static JS and HTML analysis (currently only network requests)
 - DOM parsing
 - Handle infinite scroll / load-more patterns (optional)
-- Static parsing/analysis
-- manual browsing
 - Use browser devtools protocol to trace call stacks for resource loads, or instrument JS to log resource creation
 - Statically Referenced but Not Loaded, or dynamically loaded but not triggered
 - DOM-Only or Inert Content

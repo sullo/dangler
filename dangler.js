@@ -10,6 +10,7 @@ const fs = require('fs');
 const http = require('http');
 const https = require('https');
 const { URL } = require('url');
+const cheerio = require('cheerio');
 
 // Pre-compiled regex patterns for performance
 const REGEX_PATTERNS = {
@@ -954,20 +955,44 @@ async function getRobotsRules(baseUrl, page) {
             // Wait for dynamic content to load
             await new Promise(resolve => setTimeout(resolve, 2000));
 
-            // --- Static and Dynamic Iframe Detection (after all content loaded) ---
+            // --- Static Extraction: HTML/JS/Resources ---
+            let staticResources = [];
             try {
-              const allFrames = await scanPage.$$eval('iframe', iframes => iframes.map(f => f.src));
-              for (const src of allFrames) {
-                if (src && !trackedFrames.some(f => f.parent === url && f.frameUrl === src)) {
-                  trackedFrames.push({
-                    parent: url,
-                    method: 'HTML',
-                    frameUrl: src
+              const rawHtml = await scanPage.content();
+              staticResources = extractStaticResources(rawHtml, url);
+              // Add static resources to the resources array, but mark them as staticOnly if not already present
+              for (const sres of staticResources) {
+                // Only add if not already present in resources (by url/content)
+                if (sres.url && !resources.some(r => r.url === sres.url)) {
+                  resources.push({
+                    url: sres.url,
+                    domain: sres.url ? (new URL(sres.url, url)).hostname : '',
+                    resourceType: sres.type,
+                    chainString: sres.presentButNotLoaded ? 'Static (not loaded)' : (sres.domOnly ? 'DOM-only' : 'Static'),
+                    staticOnly: true,
+                    presentButNotLoaded: sres.presentButNotLoaded,
+                    domOnly: sres.domOnly,
+                    pageUrl: url
+                  });
+                }
+                // For inline scripts, send content to JS analyzer in future
+                // (for now, just note presence)
+                if (sres.inline && sres.type === 'script' && sres.content) {
+                  resources.push({
+                    url: '[inline script]',
+                    domain: '',
+                    resourceType: 'script-inline',
+                    chainString: 'Inline',
+                    staticOnly: true,
+                    presentButNotLoaded: false,
+                    domOnly: false,
+                    pageUrl: url,
+                    scriptContent: sres.content
                   });
                 }
               }
             } catch (e) {
-              if (flags.debug) console.log(`[DEBUG][IFRAME] Error detecting static/dynamic iframes: ${e.message}`);
+              if (flags.debug) console.log(`[DEBUG][STATIC EXTRACTION] Error extracting static resources: ${e.message}`);
             }
 
             // --- Meta Refresh Detection ---
@@ -2404,4 +2429,118 @@ function withHoverDecoded(value) {
     decoded = value;
   }
   return `<span class="hover-tooltip" data-hover-decoded="${escapeTooltip(decoded)}">${escapeHtml(value)}</span>`;
+}
+
+// === Static Extraction Utilities ===
+function extractStaticResources(html, pageUrl) {
+  const $ = cheerio.load(html);
+  const resources = [];
+  // Extract <script src="...">
+  $('script[src]').each((i, el) => {
+    resources.push({
+      type: 'script',
+      url: $(el).attr('src'),
+      inline: false,
+      domOnly: false,
+      presentButNotLoaded: false,
+      pageUrl
+    });
+  });
+  // Extract inline <script> blocks
+  $('script:not([src])').each((i, el) => {
+    resources.push({
+      type: 'script',
+      content: $(el).html(),
+      inline: true,
+      domOnly: false,
+      presentButNotLoaded: false,
+      pageUrl
+    });
+  });
+  // Extract <link rel="stylesheet" href="...">
+  $('link[rel="stylesheet"][href]').each((i, el) => {
+    resources.push({
+      type: 'stylesheet',
+      url: $(el).attr('href'),
+      inline: false,
+      domOnly: true,
+      presentButNotLoaded: false,
+      pageUrl
+    });
+  });
+  // Extract <img src="...">
+  $('img[src]').each((i, el) => {
+    resources.push({
+      type: 'image',
+      url: $(el).attr('src'),
+      inline: false,
+      domOnly: true,
+      presentButNotLoaded: false,
+      pageUrl
+    });
+  });
+  // Extract comments (for future: commented-out code/resources)
+  const comments = [];
+  function findComments(node) {
+    if (!node) return;
+    if (node.type === 'comment') {
+      comments.push(node.data);
+    }
+    if (node.children) {
+      node.children.forEach(findComments);
+    }
+  }
+  findComments($.root()[0]);
+  comments.forEach(comment => {
+    // Simple regex to find script/link/img tags in comments (future: improve)
+    const scriptMatch = comment.match(/<script[^>]*src=["']([^"'>]+)["'][^>]*>/gi);
+    if (scriptMatch) {
+      scriptMatch.forEach(tag => {
+        const src = (tag.match(/src=["']([^"'>]+)["']/i) || [])[1];
+        if (src) {
+          resources.push({
+            type: 'script',
+            url: src,
+            inline: false,
+            domOnly: false,
+            presentButNotLoaded: true,
+            pageUrl
+          });
+        }
+      });
+    }
+    const linkMatch = comment.match(/<link[^>]*href=["']([^"'>]+)["'][^>]*>/gi);
+    if (linkMatch) {
+      linkMatch.forEach(tag => {
+        const href = (tag.match(/href=["']([^"'>]+)["']/i) || [])[1];
+        if (href) {
+          resources.push({
+            type: 'stylesheet',
+            url: href,
+            inline: false,
+            domOnly: true,
+            presentButNotLoaded: true,
+            pageUrl
+          });
+        }
+      });
+    }
+    const imgMatch = comment.match(/<img[^>]*src=["']([^"'>]+)["'][^>]*>/gi);
+    if (imgMatch) {
+      imgMatch.forEach(tag => {
+        const src = (tag.match(/src=["']([^"'>]+)["']/i) || [])[1];
+        if (src) {
+          resources.push({
+            type: 'image',
+            url: src,
+            inline: false,
+            domOnly: true,
+            presentButNotLoaded: true,
+            pageUrl
+          });
+        }
+      });
+    }
+  });
+  return resources;
 }
