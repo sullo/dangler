@@ -1727,6 +1727,15 @@ function writeReportsAndExit() {
   const dnsRows = [], connectRows = [], httpRows = [], takeoverRows = [];
   results.forEach(page => {
     page.resources.forEach(r => {
+      // Skip data URLs, blob URLs, and inline scripts for DNS failures
+      if (
+        (!r.url || typeof r.url !== 'string') ||
+        r.url.startsWith('data:') ||
+        r.url.startsWith('blob:') ||
+        r.url === '[inline script]'
+      ) {
+        return;
+      }
       if (!r.resolves) {
         dnsRows.push([r.url, extractHostname(r.url), page.page, r.chainString || 'Direct']);
         takeoverRows.push([r.url, extractHostname(r.url), page.page, 'DNS failure', r.chainString || 'Direct']);
