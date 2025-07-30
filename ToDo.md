@@ -5,7 +5,6 @@
 - Exposed API keys
 
 ## Coverage Gaps
-- Static JS and HTML analysis (currently only network requests)
 - DOM parsing
 - Handle infinite scroll / load-more patterns (optional)
 - Use browser devtools protocol to trace call stacks for resource loads, or instrument JS to log resource creation

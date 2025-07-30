@@ -1667,10 +1667,84 @@ function writeReportsAndExit() {
     td.label { font-weight: bold; text-align: left; width: 40%; background: #f0f0f0; }
     td.value { text-align: left; }
     th, td { border: 1px solid #ddd; padding: 8px; }
-    th { background: #f0f0f0; }
+    th { background: #f0f0f0; cursor: pointer; user-select: none; }
+    th:hover { background: #e0e0e0; }
+    th.sortable::after { content: ' ↕'; color: #999; font-size: 0.8em; }
+    th.sort-asc::after { content: ' ↑'; color: #333; font-size: 0.8em; }
+    th.sort-desc::after { content: ' ↓'; color: #333; font-size: 0.8em; }
     a { color: #0645AD; }
     small { color: #666; font-size: smaller; }
-  </style></head><body>
+  </style>
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      // Make all tables sortable
+      document.querySelectorAll('table').forEach(function(table) {
+        const headers = table.querySelectorAll('th');
+        let currentSort = { column: -1, direction: 'asc' };
+        
+        headers.forEach(function(header, index) {
+          header.classList.add('sortable');
+          
+          header.addEventListener('click', function() {
+            const tbody = table.querySelector('tbody') || table;
+            const rows = Array.from(tbody.querySelectorAll('tr')).filter(row => row.querySelector('td'));
+            
+            // Remove previous sort indicators
+            headers.forEach(h => {
+              h.classList.remove('sort-asc', 'sort-desc');
+              h.classList.add('sortable');
+            });
+            
+            // Determine sort direction
+            let direction = 'asc';
+            if (currentSort.column === index && currentSort.direction === 'asc') {
+              direction = 'desc';
+            }
+            
+            // Update sort state
+            currentSort = { column: index, direction: direction };
+            
+            // Add sort indicator
+            header.classList.remove('sortable');
+            header.classList.add(direction === 'asc' ? 'sort-asc' : 'sort-desc');
+            
+            // Sort the rows
+            rows.sort(function(a, b) {
+              const aCell = a.querySelectorAll('td')[index];
+              const bCell = b.querySelectorAll('td')[index];
+              
+              if (!aCell || !bCell) return 0;
+              
+              let aText = aCell.textContent || aCell.innerText || '';
+              let bText = bCell.textContent || bCell.innerText || '';
+              
+              // Try to parse as numbers if possible
+              const aNum = parseFloat(aText.replace(/[^0-9.-]/g, ''));
+              const bNum = parseFloat(bText.replace(/[^0-9.-]/g, ''));
+              
+              if (!isNaN(aNum) && !isNaN(bNum)) {
+                return direction === 'asc' ? aNum - bNum : bNum - aNum;
+              }
+              
+              // Sort as text
+              aText = aText.toLowerCase();
+              bText = bText.toLowerCase();
+              
+              if (aText < bText) return direction === 'asc' ? -1 : 1;
+              if (aText > bText) return direction === 'asc' ? 1 : -1;
+              return 0;
+            });
+            
+            // Reorder rows in the table
+            rows.forEach(function(row) {
+              tbody.appendChild(row);
+            });
+          });
+        });
+      });
+    });
+  </script>
+  </head><body>
   <h1>The Dangler</h1>
   <hr>
   <h2>Details</h2>
@@ -1703,6 +1777,17 @@ function writeReportsAndExit() {
       allCheckedResources.push(r.url);
       const stripped = stripQuery(r.url);
       uniqueSet.add(stripped);
+      
+      // Skip data URLs, blob URLs, and inline scripts for failure counting (consistent with filtering logic)
+      if (
+        (!r.url || typeof r.url !== 'string') ||
+        r.url.startsWith('data:') ||
+        r.url.startsWith('blob:') ||
+        r.url === '[inline script]'
+      ) {
+        return;
+      }
+      
       if (!r.resolves) dnsFailures++;
       else if (!r.tcpOk) connectFailures++;
       else if (!r.httpOk) httpFailures++;
@@ -1925,7 +2010,82 @@ function writeConsoleLogPage() {
     pre { background: #f0f0f0; padding: 20px; border-radius: 5px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; color: #222; }
     a { color: #0645AD; }
     h1 { color: #222; }
-  </style></head><body>
+    th { background: #f0f0f0; cursor: pointer; user-select: none; }
+    th:hover { background: #e0e0e0; }
+    th.sortable::after { content: ' ↕'; color: #999; font-size: 0.8em; }
+    th.sort-asc::after { content: ' ↑'; color: #333; font-size: 0.8em; }
+    th.sort-desc::after { content: ' ↓'; color: #333; font-size: 0.8em; }
+  </style>
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      // Make all tables sortable
+      document.querySelectorAll('table').forEach(function(table) {
+        const headers = table.querySelectorAll('th');
+        let currentSort = { column: -1, direction: 'asc' };
+        
+        headers.forEach(function(header, index) {
+          header.classList.add('sortable');
+          
+          header.addEventListener('click', function() {
+            const tbody = table.querySelector('tbody') || table;
+            const rows = Array.from(tbody.querySelectorAll('tr')).filter(row => row.querySelector('td'));
+            
+            // Remove previous sort indicators
+            headers.forEach(h => {
+              h.classList.remove('sort-asc', 'sort-desc');
+              h.classList.add('sortable');
+            });
+            
+            // Determine sort direction
+            let direction = 'asc';
+            if (currentSort.column === index && currentSort.direction === 'asc') {
+              direction = 'desc';
+            }
+            
+            // Update sort state
+            currentSort = { column: index, direction: direction };
+            
+            // Add sort indicator
+            header.classList.remove('sortable');
+            header.classList.add(direction === 'asc' ? 'sort-asc' : 'sort-desc');
+            
+            // Sort the rows
+            rows.sort(function(a, b) {
+              const aCell = a.querySelectorAll('td')[index];
+              const bCell = b.querySelectorAll('td')[index];
+              
+              if (!aCell || !bCell) return 0;
+              
+              let aText = aCell.textContent || aCell.innerText || '';
+              let bText = bCell.textContent || bCell.innerText || '';
+              
+              // Try to parse as numbers if possible
+              const aNum = parseFloat(aText.replace(/[^0-9.-]/g, ''));
+              const bNum = parseFloat(bText.replace(/[^0-9.-]/g, ''));
+              
+              if (!isNaN(aNum) && !isNaN(bNum)) {
+                return direction === 'asc' ? aNum - bNum : bNum - aNum;
+              }
+              
+              // Sort as text
+              aText = aText.toLowerCase();
+              bText = bText.toLowerCase();
+              
+              if (aText < bText) return direction === 'asc' ? -1 : 1;
+              if (aText > bText) return direction === 'asc' ? 1 : -1;
+              return 0;
+            });
+            
+            // Reorder rows in the table
+            rows.forEach(function(row) {
+              tbody.appendChild(row);
+            });
+          });
+        });
+      });
+    });
+  </script>
+  </head><body>
   <h1>The Dangler</h1>
   <hr>
   <a href="index.html">&larr; Back to Summary</a>
@@ -2287,7 +2447,11 @@ function writeSubpage(filename, title, rows, columns, total, makeLinks, makeLink
     td.label { font-weight: bold; text-align: left; width: 40%; background: #f0f0f0; }
     td.value { text-align: left; }
     th, td { border: 1px solid #ddd; padding: 8px; word-break: break-all; }
-    th { background: #f0f0f0; }
+    th { background: #f0f0f0; cursor: pointer; user-select: none; }
+    th:hover { background: #e0e0e0; }
+    th.sortable::after { content: ' ↕'; color: #999; font-size: 0.8em; }
+    th.sort-asc::after { content: ' ↑'; color: #333; font-size: 0.8em; }
+    th.sort-desc::after { content: ' ↓'; color: #333; font-size: 0.8em; }
     a { color: #0645AD; }
     small { color: #666; font-size: smaller; }
   </style>`;
@@ -2339,6 +2503,79 @@ function writeSubpage(filename, title, rows, columns, total, makeLinks, makeLink
       });
     </script>`;
   }
+  
+  // Add sortable table JavaScript
+  subHtml += `
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      // Make all tables sortable
+      document.querySelectorAll('table').forEach(function(table) {
+        const headers = table.querySelectorAll('th');
+        let currentSort = { column: -1, direction: 'asc' };
+        
+        headers.forEach(function(header, index) {
+          header.classList.add('sortable');
+          
+          header.addEventListener('click', function() {
+            const tbody = table.querySelector('tbody') || table;
+            const rows = Array.from(tbody.querySelectorAll('tr')).filter(row => row.querySelector('td'));
+            
+            // Remove previous sort indicators
+            headers.forEach(h => {
+              h.classList.remove('sort-asc', 'sort-desc');
+              h.classList.add('sortable');
+            });
+            
+            // Determine sort direction
+            let direction = 'asc';
+            if (currentSort.column === index && currentSort.direction === 'asc') {
+              direction = 'desc';
+            }
+            
+            // Update sort state
+            currentSort = { column: index, direction: direction };
+            
+            // Add sort indicator
+            header.classList.remove('sortable');
+            header.classList.add(direction === 'asc' ? 'sort-asc' : 'sort-desc');
+            
+            // Sort the rows
+            rows.sort(function(a, b) {
+              const aCell = a.querySelectorAll('td')[index];
+              const bCell = b.querySelectorAll('td')[index];
+              
+              if (!aCell || !bCell) return 0;
+              
+              let aText = aCell.textContent || aCell.innerText || '';
+              let bText = bCell.textContent || bCell.innerText || '';
+              
+              // Try to parse as numbers if possible
+              const aNum = parseFloat(aText.replace(/[^0-9.-]/g, ''));
+              const bNum = parseFloat(bText.replace(/[^0-9.-]/g, ''));
+              
+              if (!isNaN(aNum) && !isNaN(bNum)) {
+                return direction === 'asc' ? aNum - bNum : bNum - aNum;
+              }
+              
+              // Sort as text
+              aText = aText.toLowerCase();
+              bText = bText.toLowerCase();
+              
+              if (aText < bText) return direction === 'asc' ? -1 : 1;
+              if (aText > bText) return direction === 'asc' ? 1 : -1;
+              return 0;
+            });
+            
+            // Reorder rows in the table
+            rows.forEach(function(row) {
+              tbody.appendChild(row);
+            });
+          });
+        });
+      });
+    });
+  </script>`;
+  
   subHtml += `</head><body>
   <h1>The Dangler</h1>
   <hr>
